@@ -848,82 +848,117 @@ static BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lp)
     return TRUE;
 }
 
+/* Force redraw of the custom scrollbar */
+static void RedrawDarkScrollbar(HWND hwnd)
+{
+    RECT rc;
+    GetWindowRect(hwnd, &rc);
+    HDC hdc = GetWindowDC(hwnd);
+    int w = rc.right - rc.left;
+    int h = rc.bottom - rc.top;
+
+    /* Scrollbar geometry */
+    int sbw = GetSystemMetrics(SM_CXVSCROLL);
+    int sb_left = w - sbw;
+
+    /* Get scroll info */
+    SCROLLINFO si = {0};
+    si.cbSize = sizeof(si);
+    si.fMask = SIF_ALL;
+    GetScrollInfo(hwnd, SB_VERT, &si);
+
+    int arrow_h = sbw;
+    int track_h = h - arrow_h * 2;
+    int thumb_h = 0, thumb_y = 0;
+    if (si.nMax > si.nMin && track_h > 0) {
+        int range = si.nMax - si.nMin + 1 - (int)si.nPage;
+        if (range <= 0) range = 1;
+        thumb_h = (int)((double)si.nPage / (si.nMax - si.nMin + 1) * track_h);
+        if (thumb_h < 20) thumb_h = 20;
+        if (thumb_h > track_h) thumb_h = track_h;
+        thumb_y = arrow_h + (int)((double)(si.nPos - si.nMin) / range * (track_h - thumb_h));
+    }
+
+    /* Paint track background */
+    HBRUSH track_brush = CreateSolidBrush(CLR_SB_TRACK);
+    RECT track_rc = {sb_left, arrow_h, w, h - arrow_h};
+    FillRect(hdc, &track_rc, track_brush);
+    DeleteObject(track_brush);
+
+    /* Paint top arrow button */
+    HBRUSH arrow_brush = CreateSolidBrush(CLR_SB_ARROWBG);
+    RECT top_arrow = {sb_left, 0, w, arrow_h};
+    FillRect(hdc, &top_arrow, arrow_brush);
+    SetTextColor(hdc, CLR_SB_ARROW);
+    SetBkMode(hdc, TRANSPARENT);
+    HFONT arrow_font = CreateFontA(sbw - 8, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+        DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, "Marlett");
+    SelectObject(hdc, arrow_font);
+    SIZE asz;
+    const wchar_t *up_arrow = L"\x35";
+    GetTextExtentPoint32W(hdc, up_arrow, 1, &asz);
+    TextOutW(hdc, sb_left + (sbw - asz.cx) / 2, (arrow_h - asz.cy) / 2, up_arrow, 1);
+
+    /* Paint bottom arrow button */
+    RECT bot_arrow = {sb_left, h - arrow_h, w, h};
+    FillRect(hdc, &bot_arrow, arrow_brush);
+    const wchar_t *dn_arrow = L"\x36";
+    GetTextExtentPoint32W(hdc, dn_arrow, 1, &asz);
+    TextOutW(hdc, sb_left + (sbw - asz.cx) / 2, h - arrow_h + (arrow_h - asz.cy) / 2, dn_arrow, 1);
+    DeleteObject(arrow_font);
+    DeleteObject(arrow_brush);
+
+    /* Paint thumb */
+    if (thumb_h > 0) {
+        HBRUSH thumb_brush = CreateSolidBrush(CLR_SB_THUMB);
+        RECT thumb_rc = {sb_left + 2, thumb_y, w - 2, thumb_y + thumb_h};
+        FillRect(hdc, &thumb_rc, thumb_brush);
+        DeleteObject(thumb_brush);
+    }
+
+    /* Paint left border (replacing WS_BORDER) */
+    HBRUSH border_brush = CreateSolidBrush(RGB(60, 60, 76));
+    RECT left_border = {0, 0, 1, h};
+    FillRect(hdc, &left_border, border_brush);
+    DeleteObject(border_brush);
+
+    ReleaseDC(hwnd, hdc);
+}
+
 /* Subclass listbox to custom-draw scrollbar */
 static LRESULT CALLBACK DarkListboxProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
-    if (msg == WM_NCPAINT) {
-        /* Let default draw first */
+    switch (msg) {
+    case WM_NCPAINT:
+    case WM_PRINT:
+    case WM_PAINT:
+        /* Let default draw, then overlay our dark scrollbar */
+    {
         LRESULT ret = CallWindowProcA(g_list_orig_proc, hwnd, msg, wp, lp);
-        /* Now paint over the scrollbar */
-        RECT rc;
-        GetWindowRect(hwnd, &rc);
-        int w = rc.right - rc.left;
-        int h = rc.bottom - rc.top;
-        HDC hdc = GetWindowDC(hwnd);
-
-        /* Scrollbar geometry */
-        int sbw = GetSystemMetrics(SM_CXVSCROLL);
-        int sb_left = w - sbw;
-
-        /* Get scroll info */
-        SCROLLINFO si = {0};
-        si.cbSize = sizeof(si);
-        si.fMask = SIF_ALL;
-        GetScrollInfo(hwnd, SB_VERT, &si);
-
-        int arrow_h = sbw;
-        int track_h = h - arrow_h * 2;
-        int thumb_h = 0, thumb_y = 0;
-        if (si.nMax > si.nMin && track_h > 0) {
-            int range = si.nMax - si.nMin + 1 - (int)si.nPage;
-            if (range <= 0) range = 1;
-            thumb_h = (int)((double)si.nPage / (si.nMax - si.nMin + 1) * track_h);
-            if (thumb_h < 20) thumb_h = 20;
-            if (thumb_h > track_h) thumb_h = track_h;
-            thumb_y = arrow_h + (int)((double)(si.nPos - si.nMin) / range * (track_h - thumb_h));
-        }
-
-        /* Paint track background */
-        HBRUSH track_brush = CreateSolidBrush(CLR_SB_TRACK);
-        RECT track_rc = {sb_left, arrow_h, w, h - arrow_h};
-        FillRect(hdc, &track_rc, track_brush);
-        DeleteObject(track_brush);
-
-        /* Paint top arrow button */
-        HBRUSH arrow_brush = CreateSolidBrush(CLR_SB_ARROWBG);
-        RECT top_arrow = {sb_left, 0, w, arrow_h};
-        FillRect(hdc, &top_arrow, arrow_brush);
-        /* Draw up arrow */
-        SetTextColor(hdc, CLR_SB_ARROW);
-        SetBkMode(hdc, TRANSPARENT);
-        HFONT arrow_font = CreateFontA(sbw - 8, 0, 0, 0, FW_NORMAL, 0, 0, 0,
-            DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, "Marlett");
-        SelectObject(hdc, arrow_font);
-        SIZE asz;
-        const wchar_t *up_arrow = L"\x35";  /* Marlett up arrow = '5' */
-        GetTextExtentPoint32W(hdc, up_arrow, 1, &asz);
-        TextOutW(hdc, sb_left + (sbw - asz.cx) / 2, (arrow_h - asz.cy) / 2, up_arrow, 1);
-
-        /* Paint bottom arrow button */
-        RECT bot_arrow = {sb_left, h - arrow_h, w, h};
-        FillRect(hdc, &bot_arrow, arrow_brush);
-        /* Draw down arrow */
-        const wchar_t *dn_arrow = L"\x36";  /* Marlett down arrow = '6' */
-        GetTextExtentPoint32W(hdc, dn_arrow, 1, &asz);
-        TextOutW(hdc, sb_left + (sbw - asz.cx) / 2, h - arrow_h + (arrow_h - asz.cy) / 2, dn_arrow, 1);
-        DeleteObject(arrow_font);
-        DeleteObject(arrow_brush);
-
-        /* Paint thumb */
-        if (thumb_h > 0) {
-            HBRUSH thumb_brush = CreateSolidBrush(CLR_SB_THUMB);
-            RECT thumb_rc = {sb_left + 2, thumb_y, w - 2, thumb_y + thumb_h};
-            FillRect(hdc, &thumb_rc, thumb_brush);
-            DeleteObject(thumb_brush);
-        }
-
-        ReleaseDC(hwnd, hdc);
+        RedrawDarkScrollbar(hwnd);
         return ret;
+    }
+    case WM_VSCROLL:
+    case WM_MOUSEWHEEL:
+    case WM_KEYDOWN:
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONUP:
+    case WM_NCLBUTTONDOWN:
+    case WM_NCLBUTTONUP:
+    case WM_NCMOUSEMOVE:
+    case WM_NCMBUTTONDOWN:
+    {
+        LRESULT ret = CallWindowProcA(g_list_orig_proc, hwnd, msg, wp, lp);
+        /* After any scroll action, repaint our dark scrollbar */
+        RedrawDarkScrollbar(hwnd);
+        return ret;
+    }
+    case WM_TIMER:
+    {
+        LRESULT ret = CallWindowProcA(g_list_orig_proc, hwnd, msg, wp, lp);
+        RedrawDarkScrollbar(hwnd);
+        return ret;
+    }
     }
     return CallWindowProcA(g_list_orig_proc, hwnd, msg, wp, lp);
 }
@@ -980,7 +1015,7 @@ static LRESULT CALLBACK PickerWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
         /* List box - standard, A version for ANSI */
         g_picker_list = CreateWindowA("LISTBOX", "",
-            WS_VISIBLE | WS_CHILD | WS_BORDER | LBS_NOTIFY | WS_VSCROLL,
+            WS_VISIBLE | WS_CHILD | LBS_NOTIFY | WS_VSCROLL,
             16, 58, PICKER_W - 32, 270,
             hwnd, (HMENU)ID_PICKER_LIST, g_hinst, NULL);
         SendMessageA(g_picker_list, WM_SETFONT, (WPARAM)g_picker_font, TRUE);
