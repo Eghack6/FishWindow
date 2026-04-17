@@ -727,7 +727,7 @@ static void RestoreWindow(HWND hwnd)
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
         }
         if (e->is_topmost)
-            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+            SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         /* Destroy border overlay */
         if (e->border_hwnd && IsWindow(e->border_hwnd))
@@ -744,7 +744,7 @@ static void RestoreWindow(HWND hwnd)
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
         }
         if (g_is_topmost)
-            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+            SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
 
@@ -1218,20 +1218,23 @@ static void ShowTrayMenu(void)
 {
     HMENU hMenu = CreatePopupMenu();
 
-    /* List all clipped windows */
-    if (g_clip_count > 0) {
-        for (int i = 0; i < g_clip_count; i++) {
-            ClipEntry *e = &g_clips[i];
-            if (!e->target_hwnd || !IsWindow(e->target_hwnd)) continue;
-            wchar_t wtitle[64] = {0};
-            MultiByteToWideChar(CP_ACP, 0, e->target_title, -1, wtitle, 64);
-            wchar_t item[128];
-            swprintf(item, 128, L"%ls%s", wtitle,
-                (i == g_cur_idx) ? L" \x2190" : L"");  /* arrow marks current */
-            /* Menu IDs 100+i for clip entries */
-            AppendMenuW(hMenu, MF_STRING | (i == g_cur_idx ? MF_CHECKED : 0),
-                100 + i, item);
-        }
+    /* List all clipped windows (only those with has_clip) */
+    int clipped_count = 0;
+    for (int i = 0; i < g_clip_count; i++) {
+        ClipEntry *e = &g_clips[i];
+        if (!e->target_hwnd || !IsWindow(e->target_hwnd)) continue;
+        if (!e->has_clip) continue;
+        clipped_count++;
+        wchar_t wtitle[64] = {0};
+        MultiByteToWideChar(CP_ACP, 0, e->target_title, -1, wtitle, 64);
+        wchar_t item[128];
+        swprintf(item, 128, L"%ls%s", wtitle,
+            (i == g_cur_idx) ? L" \x2190" : L"");  /* arrow marks current */
+        /* Menu IDs 100+i for clip entries */
+        AppendMenuW(hMenu, MF_STRING | (i == g_cur_idx ? MF_CHECKED : 0),
+            100 + i, item);
+    }
+    if (clipped_count > 0) {
         AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
     }
 
@@ -1250,6 +1253,8 @@ static void ShowTrayMenu(void)
         if (g_has_clip) {
             AppendMenuW(hMenu, MF_STRING, 5, L"\x8FD8\x539F\x7A97\x53E3");
         }
+
+        AppendMenuW(hMenu, MF_STRING, 6, L"\x53D6\x6D88\x9009\x4E2D");  /* 取消选中 */
     }
 
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
@@ -1291,6 +1296,31 @@ static void ShowTrayMenu(void)
         if (g_target_hwnd && IsWindow(g_target_hwnd)) {
             SaveCurClip();
             RestoreWindow(g_target_hwnd);
+            UpdateTrayTip();
+        }
+        break;
+    case 6:
+        /* Deselect current window — remove entry if not clipped */
+        if (g_target_hwnd) {
+            if (!g_has_clip) {
+                /* No clip applied — just remove the entry */
+                if (g_cur_idx >= 0 && g_cur_idx < g_clip_count)
+                    memset(&g_clips[g_cur_idx], 0, sizeof(ClipEntry));
+                CompactClips();
+                LoadClip(-1);
+            } else {
+                /* Has clip — just switch focus, keep the entry */
+                SaveCurClip();
+                /* Try to switch to another entry */
+                int next = -1;
+                for (int i = 0; i < g_clip_count; i++) {
+                    if (i != g_cur_idx && g_clips[i].target_hwnd && g_clips[i].has_clip) {
+                        next = i;
+                        break;
+                    }
+                }
+                LoadClip(next);
+            }
             UpdateTrayTip();
         }
         break;
