@@ -491,10 +491,12 @@ static void SwitchTargetWindow(void)
             if (slot >= 0) {
                 memset(&g_clips[slot], 0, sizeof(ClipEntry));
                 if (slot >= g_clip_count) g_clip_count = slot + 1;
-                /* Set target_hwnd before LoadClip so InitTargetWindow can use it */
                 g_clips[slot].target_hwnd = new_hwnd;
                 LoadClip(slot);
                 InitTargetWindow();
+                /* Auto-topmost and start selection */
+                ToggleTopmost();
+                DoSelectArea();
             }
         }
     }
@@ -1009,6 +1011,11 @@ static LRESULT CALLBACK PickerWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             }
             /* Draw rounded rect background */
             if (btn_radius > 0) {
+                /* Fill corners with parent background to avoid white edges */
+                HBRUSH parent_bg = CreateSolidBrush(CLR_BG);
+                FillRect(dis->hDC, &dis->rcItem, parent_bg);
+                DeleteObject(parent_bg);
+                /* Draw rounded button */
                 HRGN rgn = CreateRoundRectRgn(
                     dis->rcItem.left, dis->rcItem.top,
                     dis->rcItem.right, dis->rcItem.bottom,
@@ -1365,6 +1372,9 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                         if (slot >= g_clip_count) g_clip_count = slot + 1;
                         g_cur_idx = slot;
                         InitTargetWindow();
+                        /* Auto-topmost and start selection */
+                        ToggleTopmost();
+                        DoSelectArea();
                     }
                 }
             } else {
