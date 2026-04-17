@@ -4,7 +4,7 @@
  * 全部使用 ANSI API，中文 Windows 上自动 GBK 编码
  *
  * 编译: x86_64-w64-mingw32-windres fish_window.rc fish_window_res.o &&
- *        x86_64-w64-mingw32-gcc -mwindows -O2 -o FishWindow.exe fish_window.c fish_window_res.o -lgdi32 -luser32 -lkernel32 -lshell32 -lmsimg32 -lpsapi -luxtheme
+ *        x86_64-w64-mingw32-gcc -mwindows -O2 -o FishWindow.exe fish_window.c fish_window_res.o -lgdi32 -luser32 -lkernel32 -lshell32 -lmsimg32 -lpsapi -luxtheme -ldwmapi
  */
 
 #include <windows.h>
@@ -12,6 +12,7 @@
 #include <shellapi.h>
 #include <psapi.h>
 #include <uxtheme.h>
+#include <dwmapi.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -738,6 +739,12 @@ static void ApplyClipRegion(void)
         SetWindowLongA(g_target_hwnd, GWL_EXSTYLE, new_ex);
         SetWindowPos(g_target_hwnd, NULL, 0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+
+        /* Disable DWM non-client rendering (fixes Win11 frosted glass
+           in clipped region — DWMNCRP_DISABLED = 2) */
+        BOOL nc_disabled = TRUE;
+        DwmSetWindowAttribute(g_target_hwnd,
+            DWMWA_NCRENDERING_POLICY, &nc_disabled, sizeof(nc_disabled));
     }
 
     RECT wr;
@@ -792,6 +799,11 @@ static void RestoreWindow(HWND hwnd)
             SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
+
+    /* Re-enable DWM non-client rendering */
+    BOOL nc_enabled = FALSE;
+    DwmSetWindowAttribute(hwnd,
+        DWMWA_NCRENDERING_POLICY, &nc_enabled, sizeof(nc_enabled));
 
     /* Remove clip region */
     SetWindowRgn(hwnd, NULL, TRUE);
@@ -1453,6 +1465,15 @@ static void AddTrayIcon(void)
     g_nid.hIcon = g_fish_icon;
     wcscpy(g_nid.szTip, L"FishWindow");
     Shell_NotifyIconW(NIM_ADD, &g_nid);
+
+    /* Send initial balloon notification so Windows shows the tray icon
+       (Win10 hides new icons by default; a notification forces visibility) */
+    g_nid.uFlags = NIF_INFO;
+    wcscpy(g_nid.szInfoTitle, L"FishWindow");
+    wcscpy(g_nid.szInfo, L"\u5DF2\u542F\u52A8\uFF0C\u53F3\u952E\u6258\u76D8\u56FE\u6807\u64CD\u4F5C");
+    g_nid.uTimeout = 3000;
+    g_nid.dwInfoFlags = NIIF_INFO;
+    Shell_NotifyIconW(NIM_MODIFY, &g_nid);
 }
 
 static void RemoveTrayIcon(void)
@@ -2062,12 +2083,23 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int show)
         HWND_MESSAGE, NULL, hInst, NULL
     );
 
-    /* Register hotkeys */
+    /* Register hotkeys — warn if any conflict */
     UINT mod = MOD_CONTROL | MOD_ALT;
-    RegisterHotKey(g_main_hwnd, HK_SELECT, mod, 'F');
-    RegisterHotKey(g_main_hwnd, HK_BORDER, mod, 'B');
-    RegisterHotKey(g_main_hwnd, HK_TOPMOST, mod, 'T');
-    RegisterHotKey(g_main_hwnd, HK_QUIT, mod, 'Q');
+    BOOL hk_ok = TRUE;
+    if (!RegisterHotKey(g_main_hwnd, HK_SELECT, mod, 'F')) hk_ok = FALSE;
+    if (!RegisterHotKey(g_main_hwnd, HK_BORDER, mod, 'B')) hk_ok = FALSE;
+    if (!RegisterHotKey(g_main_hwnd, HK_TOPMOST, mod, 'T')) hk_ok = FALSE;
+    if (!RegisterHotKey(g_main_hwnd, HK_QUIT, mod, 'Q')) hk_ok = FALSE;
+    if (!hk_ok) {
+        MessageBoxW(NULL,
+            L"\u90E8\u5206\u5FEB\u6377\u952E\u6CE8\u518C\u5931\u8D25\uFF0C\u53EF\u80FD\u88AB\u5176\u4ED6\u7A0B\u5E8F\u5360\u7528\u3002\n\n"
+            L"Ctrl+Alt+F \u2014 \u6846\u9009\u533A\u57DF\n"
+            L"Ctrl+Alt+B \u2014 \u8FB9\u6846\u5F00\u5173\n"
+            L"Ctrl+Alt+T \u2014 \u7A97\u53E3\u7F6E\u9876\n"
+            L"Ctrl+Alt+Q \u2014 \u8FD8\u539F\u7A97\u53E3",
+            L"FishWindow \u5FEB\u6377\u952E\u51B2\u7A81",
+            MB_OK | MB_ICONWARNING);
+    }
 
     /* Add tray icon */
     AddTrayIcon();

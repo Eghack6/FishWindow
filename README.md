@@ -64,14 +64,14 @@
 rc fish_window.rc
 
 # 编译 exe
-cl /O2 /Fe:FishWindow.exe fish_window.c fish_window_res.o user32.lib gdi32.lib kernel32.lib shell32.lib msimg32.lib psapi.lib uxtheme.lib
+cl /O2 /Fe:FishWindow.exe fish_window.c fish_window_res.o user32.lib gdi32.lib kernel32.lib shell32.lib msimg32.lib psapi.lib uxtheme.lib dwmapi.lib
 ```
 
 ### Windows（MinGW）
 
 ```bash
 windres fish_window.rc fish_window_res.o
-gcc -mwindows -O2 -o FishWindow.exe fish_window.c fish_window_res.o -lgdi32 -luser32 -lkernel32 -lshell32 -lmsimg32 -lpsapi -luxtheme
+gcc -mwindows -O2 -o FishWindow.exe fish_window.c fish_window_res.o -lgdi32 -luser32 -lkernel32 -lshell32 -lmsimg32 -lpsapi -luxtheme -ldwmapi
 ```
 
 ### Linux 交叉编译（MinGW）
@@ -79,7 +79,7 @@ gcc -mwindows -O2 -o FishWindow.exe fish_window.c fish_window_res.o -lgdi32 -lus
 ```bash
 sudo apt install gcc-mingw-w64-x86-64
 x86_64-w64-mingw32-windres fish_window.rc fish_window_res.o
-x86_64-w64-mingw32-gcc -mwindows -O2 -o FishWindow.exe fish_window.c fish_window_res.o -lgdi32 -luser32 -lkernel32 -lshell32 -lmsimg32 -lpsapi -luxtheme
+x86_64-w64-mingw32-gcc -mwindows -O2 -o FishWindow.exe fish_window.c fish_window_res.o -lgdi32 -luser32 -lkernel32 -lshell32 -lmsimg32 -lpsapi -luxtheme -ldwmapi
 ```
 
 ## 技术原理
