@@ -76,6 +76,26 @@ static LONG g_orig_style = 0;
 static LONG g_orig_ex_style = 0;
 static BOOL g_style_saved = FALSE;
 
+/* Get virtual desktop bounds (covers all monitors) */
+static void GetVirtualDesktop(RECT *vdesk)
+{
+    vdesk->left   = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    vdesk->top    = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    vdesk->right  = vdesk->left + GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    vdesk->bottom = vdesk->top + GetSystemMetrics(SM_CYVIRTUALSCREEN);
+}
+
+/* Center a rect within the virtual desktop */
+static POINT CenterInVirtualDesktop(int width, int height)
+{
+    RECT vdesk;
+    GetVirtualDesktop(&vdesk);
+    POINT pt;
+    pt.x = vdesk.left + (vdesk.right - vdesk.left - width) / 2;
+    pt.y = vdesk.top + (vdesk.bottom - vdesk.top - height) / 2;
+    return pt;
+}
+
 /* ======================== Selection Overlay ======================== */
 
 typedef struct {
@@ -142,26 +162,28 @@ static LRESULT CALLBACK SelectionWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
 
-        int sw = GetSystemMetrics(SM_CXSCREEN);
-        int sh = GetSystemMetrics(SM_CYSCREEN);
+        RECT vdesk;
+        GetVirtualDesktop(&vdesk);
+        int vw = vdesk.right - vdesk.left;
+        int vh = vdesk.bottom - vdesk.top;
 
         /* Double-buffer: draw to offscreen DC first */
         HDC mem_dc = CreateCompatibleDC(hdc);
-        HBITMAP mem_bmp = CreateCompatibleBitmap(hdc, sw, sh);
+        HBITMAP mem_bmp = CreateCompatibleBitmap(hdc, vw, vh);
         HBITMAP old_bmp = SelectObject(mem_dc, mem_bmp);
 
         /* Draw screenshot */
-        BitBlt(mem_dc, 0, 0, sw, sh, ss->snapshot_dc, 0, 0, SRCCOPY);
+        BitBlt(mem_dc, 0, 0, vw, vh, ss->snapshot_dc, 0, 0, SRCCOPY);
 
         /* Dark overlay using AlphaBlend */
         BLENDFUNCTION bf = {AC_SRC_OVER, 0, 140, 0};
         HDC dark_dc = CreateCompatibleDC(mem_dc);
-        HBITMAP dark_bmp = CreateCompatibleBitmap(mem_dc, sw, sh);
+        HBITMAP dark_bmp = CreateCompatibleBitmap(mem_dc, vw, vh);
         SelectObject(dark_dc, dark_bmp);
-        RECT full = {0, 0, sw, sh};
+        RECT full = {0, 0, vw, vh};
         HBRUSH dark_brush = CreateSolidBrush(RGB(0, 0, 0));
         FillRect(dark_dc, &full, dark_brush);
-        AlphaBlend(mem_dc, 0, 0, sw, sh, dark_dc, 0, 0, sw, sh, bf);
+        AlphaBlend(mem_dc, 0, 0, vw, vh, dark_dc, 0, 0, vw, vh, bf);
         DeleteObject(dark_bmp);
         DeleteDC(dark_dc);
         DeleteObject(dark_brush);
@@ -202,7 +224,7 @@ static LRESULT CALLBACK SelectionWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
         }
 
         /* Blit offscreen to screen in one shot */
-        BitBlt(hdc, 0, 0, sw, sh, mem_dc, 0, 0, SRCCOPY);
+        BitBlt(hdc, 0, 0, vw, vh, mem_dc, 0, 0, SRCCOPY);
         SelectObject(mem_dc, old_bmp);
         DeleteObject(mem_bmp);
         DeleteDC(mem_dc);
@@ -221,15 +243,17 @@ static LRESULT CALLBACK SelectionWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
 
 static BOOL RunSelectionOverlay(RECT *out_rect)
 {
-    int sw = GetSystemMetrics(SM_CXSCREEN);
-    int sh = GetSystemMetrics(SM_CYSCREEN);
+    RECT vdesk;
+    GetVirtualDesktop(&vdesk);
+    int vw = vdesk.right - vdesk.left;
+    int vh = vdesk.bottom - vdesk.top;
 
-    /* Take screenshot */
+    /* Take screenshot of entire virtual desktop */
     HDC screen_dc = GetDC(NULL);
     HDC mem_dc = CreateCompatibleDC(screen_dc);
-    HBITMAP snapshot = CreateCompatibleBitmap(screen_dc, sw, sh);
+    HBITMAP snapshot = CreateCompatibleBitmap(screen_dc, vw, vh);
     SelectObject(mem_dc, snapshot);
-    BitBlt(mem_dc, 0, 0, sw, sh, screen_dc, 0, 0, SRCCOPY);
+    BitBlt(mem_dc, 0, 0, vw, vh, screen_dc, vdesk.left, vdesk.top, SRCCOPY);
     ReleaseDC(NULL, screen_dc);
 
     /* Register class */
@@ -244,12 +268,12 @@ static BOOL RunSelectionOverlay(RECT *out_rect)
         registered = TRUE;
     }
 
-    /* Create overlay */
+    /* Create overlay covering entire virtual desktop */
     HWND overlay = CreateWindowExA(
         WS_EX_LAYERED | WS_EX_TOPMOST,
         "FishWindowSel", "FishWindow Selection",
         WS_POPUP,
-        0, 0, sw, sh,
+        vdesk.left, vdesk.top, vw, vh,
         NULL, NULL, g_hinst, NULL
     );
 
@@ -918,8 +942,9 @@ static BOOL ShowWindowPicker(void)
     g_picker_hover_close = FALSE;
 
     /* Center on screen */
-    int sx = (GetSystemMetrics(SM_CXSCREEN) - PICKER_W) / 2;
-    int sy = (GetSystemMetrics(SM_CYSCREEN) - PICKER_H) / 2;
+    POINT center = CenterInVirtualDesktop(PICKER_W, PICKER_H);
+    int sx = center.x;
+    int sy = center.y;
 
     HWND picker = CreateWindowExA(
         WS_EX_LAYERED | WS_EX_TOPMOST,
@@ -1347,8 +1372,9 @@ static void ShowWelcomeDialog(void)
         registered = TRUE;
     }
 
-    int sx = (GetSystemMetrics(SM_CXSCREEN) - WELCOME_W) / 2;
-    int sy = (GetSystemMetrics(SM_CYSCREEN) - WELCOME_H) / 2;
+    POINT center = CenterInVirtualDesktop(WELCOME_W, WELCOME_H);
+    int sx = center.x;
+    int sy = center.y;
 
     HWND dlg = CreateWindowExA(
         WS_EX_LAYERED | WS_EX_TOPMOST,
