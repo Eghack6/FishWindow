@@ -4,7 +4,7 @@
  * 全部使用 ANSI API，中文 Windows 上自动 GBK 编码
  *
  * 编译: x86_64-w64-mingw32-windres fish_window.rc fish_window_res.o &&
- *        x86_64-w64-mingw32-gcc -mwindows -O2 -o FishWindow.exe fish_window.c fish_window_res.o -lgdi32 -luser32 -lkernel32 -lshell32 -lmsimg32 -lpsapi
+ *        x86_64-w64-mingw32-gcc -mwindows -O2 -o FishWindow.exe fish_window.c fish_window_res.o -lgdi32 -luser32 -lkernel32 -lshell32 -lmsimg32 -lpsapi -luxtheme
  */
 
 #include <windows.h>
@@ -801,7 +801,6 @@ static void RestoreWindow(HWND hwnd)
     CompactClips();
 }
 
-/* Restore a window that may not be the current target (used when switching) */
 /* ======================== Window Picker Dialog ======================== */
 
 #define MAX_WINDOWS 128
@@ -1598,7 +1597,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 (strcmp(fg_class, "FishWindowPicker") == 0) ||
                 (strcmp(fg_class, "FishWindowWelcome") == 0) ||
                 (strcmp(fg_class, "FishWindowBorder") == 0) ||
-                (strcmp(fg_class, "FishWindowSelection") == 0);
+                (strcmp(fg_class, "FishWindowSel") == 0);
 
             if (fg && !is_our_window) {
                 int existing = FindClipIdx(fg);
