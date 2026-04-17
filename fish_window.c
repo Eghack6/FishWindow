@@ -61,6 +61,27 @@ static void EnableDpiAwareness(void)
 
 /* ======================== Global State ======================== */
 
+#define MAX_CLIP_ENTRIES 16
+
+typedef struct ClipEntry {
+    HWND target_hwnd;
+    char target_title[256];
+    BOOL has_clip;
+    BOOL show_border;
+    BOOL is_topmost;
+    RECT clip_rect_window;
+    RECT last_win_rect;
+    HWND border_hwnd;
+    LONG orig_style;
+    LONG orig_ex_style;
+    BOOL style_saved;
+} ClipEntry;
+
+static ClipEntry g_clips[MAX_CLIP_ENTRIES];
+static int g_clip_count = 0;
+static int g_cur_idx = -1;  /* current active clip, -1 = none */
+
+/* Current window state — used by all existing code */
 static HWND g_target_hwnd = NULL;
 static char g_target_title[256] = {0};
 static BOOL g_has_clip = FALSE;
@@ -69,12 +90,102 @@ static BOOL g_is_topmost = FALSE;
 static RECT g_clip_rect_window = {0};
 static RECT g_last_win_rect = {0};
 static HWND g_border_hwnd = NULL;
-static HWND g_main_hwnd = NULL;
-static HINSTANCE g_hinst = NULL;
-static NOTIFYICONDATAW g_nid = {0};
 static LONG g_orig_style = 0;
 static LONG g_orig_ex_style = 0;
 static BOOL g_style_saved = FALSE;
+
+static HWND g_main_hwnd = NULL;
+static HINSTANCE g_hinst = NULL;
+static NOTIFYICONDATAW g_nid = {0};
+
+/* Save current globals into g_clips[g_cur_idx] */
+static void SaveCurClip(void)
+{
+    if (g_cur_idx < 0 || g_cur_idx >= g_clip_count) return;
+    ClipEntry *e = &g_clips[g_cur_idx];
+    e->target_hwnd = g_target_hwnd;
+    memcpy(e->target_title, g_target_title, sizeof(g_target_title));
+    e->has_clip = g_has_clip;
+    e->show_border = g_show_border;
+    e->is_topmost = g_is_topmost;
+    e->clip_rect_window = g_clip_rect_window;
+    e->last_win_rect = g_last_win_rect;
+    e->border_hwnd = g_border_hwnd;
+    e->orig_style = g_orig_style;
+    e->orig_ex_style = g_orig_ex_style;
+    e->style_saved = g_style_saved;
+}
+
+/* Load g_clips[idx] into globals, set g_cur_idx */
+static void LoadClip(int idx)
+{
+    if (idx < 0 || idx >= g_clip_count) {
+        g_target_hwnd = NULL;
+        g_target_title[0] = 0;
+        g_has_clip = FALSE;
+        g_show_border = FALSE;
+        g_is_topmost = FALSE;
+        memset(&g_clip_rect_window, 0, sizeof(g_clip_rect_window));
+        memset(&g_last_win_rect, 0, sizeof(g_last_win_rect));
+        g_border_hwnd = NULL;
+        g_orig_style = 0;
+        g_orig_ex_style = 0;
+        g_style_saved = FALSE;
+        g_cur_idx = -1;
+        return;
+    }
+    g_cur_idx = idx;
+    ClipEntry *e = &g_clips[idx];
+    g_target_hwnd = e->target_hwnd;
+    memcpy(g_target_title, e->target_title, sizeof(g_target_title));
+    g_has_clip = e->has_clip;
+    g_show_border = e->show_border;
+    g_is_topmost = e->is_topmost;
+    g_clip_rect_window = e->clip_rect_window;
+    g_last_win_rect = e->last_win_rect;
+    g_border_hwnd = e->border_hwnd;
+    g_orig_style = e->orig_style;
+    g_orig_ex_style = e->orig_ex_style;
+    g_style_saved = e->style_saved;
+}
+
+/* Find clip by hwnd, returns index or -1 */
+static int FindClipIdx(HWND hwnd)
+{
+    for (int i = 0; i < g_clip_count; i++)
+        if (g_clips[i].target_hwnd == hwnd) return i;
+    return -1;
+}
+
+/* Find free slot, returns index or -1 */
+static int FindFreeSlot(void)
+{
+    for (int i = 0; i < MAX_CLIP_ENTRIES; i++)
+        if (g_clips[i].target_hwnd == NULL) return i;
+    return -1;
+}
+
+/* Remove dead entries, fix g_cur_idx */
+static void CompactClips(void)
+{
+    HWND cur_hwnd = g_target_hwnd;
+    int write = 0;
+    for (int i = 0; i < g_clip_count; i++) {
+        ClipEntry *e = &g_clips[i];
+        if (e->target_hwnd && IsWindow(e->target_hwnd)) {
+            if (i != write) g_clips[write] = *e;
+            write++;
+        } else {
+            if (e->border_hwnd && IsWindow(e->border_hwnd))
+                DestroyWindow(e->border_hwnd);
+        }
+    }
+    g_clip_count = write;
+    /* Reload current if still alive */
+    int new_idx = FindClipIdx(cur_hwnd);
+    if (new_idx >= 0) LoadClip(new_idx);
+    else LoadClip(-1);
+}
 
 /* Get virtual desktop bounds (covers all monitors) */
 static void GetVirtualDesktop(RECT *vdesk)
@@ -315,7 +426,6 @@ static BOOL RunSelectionOverlay(RECT *out_rect)
 static void UpdateTrayTip(void);
 static void SetBorderStatus(const wchar_t *text);
 static BOOL ShowWindowPicker(void);
-static void RestoreOtherWindow(HWND hwnd, LONG saved_style, LONG saved_ex_style);
 static void DoSelectArea(void);
 
 /* Full window redraw flags — used in multiple places */
@@ -330,6 +440,7 @@ static void InitTargetWindow(void)
     g_has_clip = FALSE;
     g_is_topmost = FALSE;
     g_style_saved = FALSE;
+    SaveCurClip();
     UpdateTrayTip();
 }
 
@@ -341,6 +452,7 @@ static void ToggleBorder(void)
         ShowWindow(g_border_hwnd, g_show_border ? SW_SHOWNA : SW_HIDE);
     }
     SetBorderStatus(g_show_border ? L"\x8FB9\x6846\x663E\x793A" : L"\x8FB9\x6846\x9690\x85CF");
+    SaveCurClip();
 }
 
 /* Toggle window topmost */
@@ -351,19 +463,40 @@ static void ToggleTopmost(void)
         g_is_topmost ? HWND_TOPMOST : HWND_NOTOPMOST,
         0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     SetBorderStatus(g_is_topmost ? L"\x7A97\x53E3\x7F6E\x9876" : L"\x53D6\x6D88\x7F6E\x9876");
+    SaveCurClip();
 }
 
-/* Switch to a new target window, restoring the old one if needed */
+/* Switch to a new target window (add new clip entry) */
 static void SwitchTargetWindow(void)
 {
-    HWND old_hwnd = g_target_hwnd;
-    LONG old_style = g_orig_style;
-    LONG old_ex_style = g_orig_ex_style;
-    BOOL old_clipped = g_has_clip && g_style_saved;
+    /* Save current clip state */
+    SaveCurClip();
+
     if (ShowWindowPicker() && g_target_hwnd) {
-        if (old_clipped && old_hwnd && old_hwnd != g_target_hwnd && IsWindow(old_hwnd))
-            RestoreOtherWindow(old_hwnd, old_style, old_ex_style);
-        InitTargetWindow();
+        HWND new_hwnd = g_target_hwnd;  /* picker sets this */
+
+        /* Check if this window already has a clip entry */
+        int existing = FindClipIdx(new_hwnd);
+        if (existing >= 0) {
+            /* Switch to existing entry */
+            LoadClip(existing);
+        } else {
+            /* Create new clip entry */
+            int slot = FindFreeSlot();
+            if (slot < 0) {
+                /* No free slots — compact and try again */
+                CompactClips();
+                slot = FindFreeSlot();
+            }
+            if (slot >= 0) {
+                memset(&g_clips[slot], 0, sizeof(ClipEntry));
+                if (slot >= g_clip_count) g_clip_count = slot + 1;
+                /* Set target_hwnd before LoadClip so InitTargetWindow can use it */
+                g_clips[slot].target_hwnd = new_hwnd;
+                LoadClip(slot);
+                InitTargetWindow();
+            }
+        }
     }
 }
 
@@ -576,42 +709,54 @@ static void ApplyClipRegion(void)
     SetWindowRgn(g_target_hwnd, hrgn, TRUE);
 
     UpdateBorderPosition();
+    SaveCurClip();
 }
 
 static void RestoreWindow(HWND hwnd)
 {
     if (!IsWindow(hwnd)) return;
 
-    /* Restore original window style */
-    if (g_style_saved && hwnd == g_target_hwnd) {
-        SetWindowLongA(hwnd, GWL_STYLE, g_orig_style);
-        SetWindowLongA(hwnd, GWL_EXSTYLE, g_orig_ex_style);
-        g_style_saved = FALSE;
-        SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+    /* Find the clip entry for this window to get saved styles */
+    int idx = FindClipIdx(hwnd);
+    if (idx >= 0) {
+        ClipEntry *e = &g_clips[idx];
+        if (e->style_saved) {
+            SetWindowLongA(hwnd, GWL_STYLE, e->orig_style);
+            SetWindowLongA(hwnd, GWL_EXSTYLE, e->orig_ex_style);
+            SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+        }
+        if (e->is_topmost)
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        /* Destroy border overlay */
+        if (e->border_hwnd && IsWindow(e->border_hwnd))
+            DestroyWindow(e->border_hwnd);
+        /* Remove entry */
+        memset(e, 0, sizeof(ClipEntry));
+    } else {
+        /* Fallback: use current globals if this is the current target */
+        if (g_style_saved && hwnd == g_target_hwnd) {
+            SetWindowLongA(hwnd, GWL_STYLE, g_orig_style);
+            SetWindowLongA(hwnd, GWL_EXSTYLE, g_orig_ex_style);
+            g_style_saved = FALSE;
+            SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+        }
+        if (g_is_topmost)
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
 
     /* Remove clip region */
     SetWindowRgn(hwnd, NULL, TRUE);
-
-    if (g_is_topmost)
-        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     RedrawWindow(hwnd, NULL, NULL, REDRAW_FULL);
+
+    /* Compact and reload */
+    CompactClips();
 }
 
 /* Restore a window that may not be the current target (used when switching) */
-static void RestoreOtherWindow(HWND hwnd, LONG saved_style, LONG saved_ex_style)
-{
-    if (!IsWindow(hwnd)) return;
-    SetWindowLongA(hwnd, GWL_STYLE, saved_style);
-    SetWindowLongA(hwnd, GWL_EXSTYLE, saved_ex_style);
-    SetWindowRgn(hwnd, NULL, TRUE);
-    SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
-        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
-    RedrawWindow(hwnd, NULL, NULL, REDRAW_FULL);
-}
-
 /* ======================== Window Picker Dialog ======================== */
 
 #define MAX_WINDOWS 128
@@ -975,10 +1120,18 @@ static BOOL ShowWindowPicker(void)
 static void UpdateTrayTip(void)
 {
     wchar_t tip[128];
-    if (g_target_hwnd && g_has_clip) {
+    if (g_clip_count > 1) {
+        if (g_target_hwnd && g_has_clip) {
+            wchar_t wtitle[64] = {0};
+            MultiByteToWideChar(CP_ACP, 0, g_target_title, -1, wtitle, 64);
+            swprintf(tip, 128, L"%ls - \x5DF2\x88C1\x526A (%d)", wtitle, g_clip_count);
+        } else {
+            swprintf(tip, 128, L"FishWindow (%d)", g_clip_count);
+        }
+    } else if (g_target_hwnd && g_has_clip) {
         wchar_t wtitle[64] = {0};
         MultiByteToWideChar(CP_ACP, 0, g_target_title, -1, wtitle, 64);
-        swprintf(tip, 128, L"%ls - \x5DF2\u88C1\u526A", wtitle);
+        swprintf(tip, 128, L"%ls - \x5DF2\x88C1\x526A", wtitle);
     } else if (g_target_hwnd) {
         wchar_t wtitle[64] = {0};
         MultiByteToWideChar(CP_ACP, 0, g_target_title, -1, wtitle, 64);
@@ -1044,26 +1197,39 @@ static void ShowTrayMenu(void)
 {
     HMENU hMenu = CreatePopupMenu();
 
-    if (g_target_hwnd) {
-        wchar_t wtitle[256] = {0};
-        MultiByteToWideChar(CP_ACP, 0, g_target_title, -1, wtitle, 256);
-        wchar_t item[256];
-        swprintf(item, 256, L"\x7A97\x53E3: %ls", wtitle);
-        AppendMenuW(hMenu, MF_STRING, 10, item);
-        AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
-    } else {
-        AppendMenuW(hMenu, MF_STRING, 1, L"\x9009\x62E9\x7A97\x53E3...");
+    /* List all clipped windows */
+    if (g_clip_count > 0) {
+        for (int i = 0; i < g_clip_count; i++) {
+            ClipEntry *e = &g_clips[i];
+            if (!e->target_hwnd || !IsWindow(e->target_hwnd)) continue;
+            wchar_t wtitle[64] = {0};
+            MultiByteToWideChar(CP_ACP, 0, e->target_title, -1, wtitle, 64);
+            wchar_t item[128];
+            swprintf(item, 128, L"%ls%s", wtitle,
+                (i == g_cur_idx) ? L" \x2190" : L"");  /* arrow marks current */
+            /* Menu IDs 100+i for clip entries */
+            AppendMenuW(hMenu, MF_STRING | (i == g_cur_idx ? MF_CHECKED : 0),
+                100 + i, item);
+        }
         AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
     }
 
-    AppendMenuW(hMenu, MF_STRING, 2,
-        g_has_clip ? L"\x91CD\x65B0\x6846\x9009" : L"\x6846\x9009\x533A\x57DF");
+    AppendMenuW(hMenu, MF_STRING, 1, L"\x9009\x62E9\x7A97\x53E3...");
 
-    AppendMenuW(hMenu, MF_STRING | (g_show_border ? MF_CHECKED : 0), 3,
-        g_show_border ? L"\x9690\x85CF\x8FB9\x6846" : L"\x663E\x793A\x8FB9\x6846");
+    if (g_target_hwnd) {
+        AppendMenuW(hMenu, MF_STRING, 2,
+            g_has_clip ? L"\x91CD\x65B0\x6846\x9009" : L"\x6846\x9009\x533A\x57DF");
 
-    AppendMenuW(hMenu, MF_STRING | (g_is_topmost ? MF_CHECKED : 0), 4,
-        g_is_topmost ? L"\x53D6\x6D88\x7F6E\x9876" : L"\x7A97\x53E3\x7F6E\x9876");
+        AppendMenuW(hMenu, MF_STRING | (g_show_border ? MF_CHECKED : 0), 3,
+            g_show_border ? L"\x9690\x85CF\x8FB9\x6846" : L"\x663E\x793A\x8FB9\x6846");
+
+        AppendMenuW(hMenu, MF_STRING | (g_is_topmost ? MF_CHECKED : 0), 4,
+            g_is_topmost ? L"\x53D6\x6D88\x7F6E\x9876" : L"\x7A97\x53E3\x7F6E\x9876");
+
+        if (g_has_clip) {
+            AppendMenuW(hMenu, MF_STRING, 5, L"\x8FD8\x539F\x7A97\x53E3");
+        }
+    }
 
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(hMenu, MF_STRING, 99, L"\x9000\x51FA");
@@ -1075,10 +1241,14 @@ static void ShowTrayMenu(void)
         pt.x, pt.y, 0, g_main_hwnd, NULL);
     DestroyMenu(hMenu);
 
-    switch (cmd) {
-    case 10:
+    if (cmd >= 100 && cmd < 100 + g_clip_count) {
+        /* Switch to a different clip entry */
+        int idx = cmd - 100;
+        SaveCurClip();
+        LoadClip(idx);
+        UpdateTrayTip();
+    } else switch (cmd) {
     case 1:
-        /* Switch target window */
         SwitchTargetWindow();
         break;
     case 2:
@@ -1095,6 +1265,14 @@ static void ShowTrayMenu(void)
         if (g_target_hwnd && IsWindow(g_target_hwnd))
             ToggleTopmost();
         break;
+    case 5:
+        /* Restore current window */
+        if (g_target_hwnd && IsWindow(g_target_hwnd)) {
+            SaveCurClip();
+            RestoreWindow(g_target_hwnd);
+            UpdateTrayTip();
+        }
+        break;
     case 99:
         PostMessageA(g_main_hwnd, WM_CLOSE, 0, 0);
         break;
@@ -1110,8 +1288,16 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         switch (wp) {
         case HK_SELECT:
             if (!g_target_hwnd) {
-                if (ShowWindowPicker() && g_target_hwnd)
-                    InitTargetWindow();
+                /* No current clip — create new one */
+                if (ShowWindowPicker() && g_target_hwnd) {
+                    int slot = FindFreeSlot();
+                    if (slot >= 0) {
+                        memset(&g_clips[slot], 0, sizeof(ClipEntry));
+                        if (slot >= g_clip_count) g_clip_count = slot + 1;
+                        g_cur_idx = slot;
+                        InitTargetWindow();
+                    }
+                }
             } else {
                 DoSelectArea();
             }
@@ -1126,11 +1312,8 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             break;
         case HK_QUIT:
             if (g_target_hwnd && IsWindow(g_target_hwnd) && g_has_clip) {
+                SaveCurClip();
                 RestoreWindow(g_target_hwnd);
-                g_has_clip = FALSE;
-                g_style_saved = FALSE;
-                if (g_border_hwnd && IsWindow(g_border_hwnd))
-                    ShowWindow(g_border_hwnd, SW_HIDE);
                 KillTimer(hwnd, TIMER_TRACK);
                 SetBorderStatus(L"\x5DF2\x8FD8\x539F");
                 UpdateTrayTip();
@@ -1150,27 +1333,58 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         return 0;
     case WM_TIMER:
-        if (wp == TIMER_TRACK && g_target_hwnd && g_has_clip) {
-            if (!IsWindow(g_target_hwnd)) {
-                g_target_hwnd = NULL;
-                KillTimer(hwnd, TIMER_TRACK);
-                if (g_border_hwnd) ShowWindow(g_border_hwnd, SW_HIDE);
-                return 0;
+        if (wp == TIMER_TRACK) {
+            /* Poll all clip entries for window moves */
+            BOOL any_alive = FALSE;
+            for (int i = 0; i < g_clip_count; i++) {
+                ClipEntry *e = &g_clips[i];
+                if (!e->target_hwnd || !IsWindow(e->target_hwnd)) {
+                    /* Window died — clean up its border */
+                    if (e->border_hwnd && IsWindow(e->border_hwnd))
+                        DestroyWindow(e->border_hwnd);
+                    memset(e, 0, sizeof(ClipEntry));
+                    continue;
+                }
+                any_alive = TRUE;
+                if (!e->has_clip) continue;
+                RECT cur;
+                GetWindowRect(e->target_hwnd, &cur);
+                if (cur.left != e->last_win_rect.left || cur.top != e->last_win_rect.top ||
+                    cur.right != e->last_win_rect.right || cur.bottom != e->last_win_rect.bottom) {
+                    /* If this is the current clip, update globals too */
+                    if (i == g_cur_idx) {
+                        g_last_win_rect = cur;
+                        UpdateBorderPosition();
+                    } else {
+                        e->last_win_rect = cur;
+                        /* Update border for non-current clips */
+                        if (e->border_hwnd && IsWindow(e->border_hwnd)) {
+                            RECT wr;
+                            GetWindowRect(e->target_hwnd, &wr);
+                            MoveWindow(e->border_hwnd,
+                                wr.left + e->clip_rect_window.left - g_border_width,
+                                wr.top + e->clip_rect_window.top - g_border_width,
+                                e->clip_rect_window.right - e->clip_rect_window.left + g_border_width * 2,
+                                e->clip_rect_window.bottom - e->clip_rect_window.top + g_border_width * 2,
+                                TRUE);
+                        }
+                    }
+                }
             }
-            RECT cur;
-            GetWindowRect(g_target_hwnd, &cur);
-            if (cur.left != g_last_win_rect.left || cur.top != g_last_win_rect.top ||
-                cur.right != g_last_win_rect.right || cur.bottom != g_last_win_rect.bottom) {
-                UpdateBorderPosition();
-                g_last_win_rect = cur;
+            if (!any_alive) {
+                KillTimer(hwnd, TIMER_TRACK);
+                CompactClips();
+                LoadClip(-1);
+                UpdateTrayTip();
             }
         }
         return 0;
     case WM_CLOSE:
-        if (g_target_hwnd && IsWindow(g_target_hwnd))
-            RestoreWindow(g_target_hwnd);
-        if (g_border_hwnd && IsWindow(g_border_hwnd))
-            DestroyWindow(g_border_hwnd);
+        /* Restore all clipped windows */
+        for (int i = 0; i < g_clip_count; i++) {
+            if (g_clips[i].target_hwnd && IsWindow(g_clips[i].target_hwnd))
+                RestoreWindow(g_clips[i].target_hwnd);
+        }
         KillTimer(hwnd, TIMER_TRACK);
         RemoveTrayIcon();
         PostQuitMessage(0);
@@ -1212,9 +1426,11 @@ static void DoSelectArea(void)
         wchar_t nmsg2[256];
         swprintf(nmsg2, 256, L"\x5DF2\x88C1\x526A (%dx%d)", w, h);
         SetBorderStatus(nmsg2);
+        SaveCurClip();
         UpdateTrayTip();
     } else if (g_has_clip) {
         ApplyClipRegion();
+        SaveCurClip();
     }
 }
 
