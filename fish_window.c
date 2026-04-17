@@ -11,6 +11,7 @@
 #include <windowsx.h>
 #include <shellapi.h>
 #include <psapi.h>
+#include <uxtheme.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -777,6 +778,14 @@ static int g_window_count = 0;
 static HWND g_picker_list = NULL;
 static HFONT g_picker_font = NULL;
 static HFONT g_picker_title_font = NULL;
+static WNDPROC g_list_orig_proc = NULL;  /* original listbox wndproc */
+
+/* Dark scrollbar colors — visible but not jarring */
+#define CLR_SB_TRACK    RGB(50, 50, 64)   /* scrollbar track */
+#define CLR_SB_THUMB   RGB(80, 80, 100)  /* scrollbar thumb */
+#define CLR_SB_HOVER   RGB(100, 100, 120) /* thumb hover */
+#define CLR_SB_ARROW   RGB(140, 140, 160) /* arrow button color */
+#define CLR_SB_ARROWBG RGB(50, 50, 64)   /* arrow button background */
 
 /* Dark theme colors */
 #define CLR_BG        RGB(32, 32, 40)
@@ -839,6 +848,86 @@ static BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lp)
     return TRUE;
 }
 
+/* Subclass listbox to custom-draw scrollbar */
+static LRESULT CALLBACK DarkListboxProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (msg == WM_NCPAINT) {
+        /* Let default draw first */
+        LRESULT ret = CallWindowProcA(g_list_orig_proc, hwnd, msg, wp, lp);
+        /* Now paint over the scrollbar */
+        RECT rc;
+        GetWindowRect(hwnd, &rc);
+        int w = rc.right - rc.left;
+        int h = rc.bottom - rc.top;
+        HDC hdc = GetWindowDC(hwnd);
+
+        /* Scrollbar geometry */
+        int sbw = GetSystemMetrics(SM_CXVSCROLL);
+        int sb_left = w - sbw;
+
+        /* Get scroll info */
+        SCROLLINFO si = {0};
+        si.cbSize = sizeof(si);
+        si.fMask = SIF_ALL;
+        GetScrollInfo(hwnd, SB_VERT, &si);
+
+        int arrow_h = sbw;
+        int track_h = h - arrow_h * 2;
+        int thumb_h = 0, thumb_y = 0;
+        if (si.nMax > si.nMin && track_h > 0) {
+            int range = si.nMax - si.nMin + 1 - (int)si.nPage;
+            if (range <= 0) range = 1;
+            thumb_h = (int)((double)si.nPage / (si.nMax - si.nMin + 1) * track_h);
+            if (thumb_h < 20) thumb_h = 20;
+            if (thumb_h > track_h) thumb_h = track_h;
+            thumb_y = arrow_h + (int)((double)(si.nPos - si.nMin) / range * (track_h - thumb_h));
+        }
+
+        /* Paint track background */
+        HBRUSH track_brush = CreateSolidBrush(CLR_SB_TRACK);
+        RECT track_rc = {sb_left, arrow_h, w, h - arrow_h};
+        FillRect(hdc, &track_rc, track_brush);
+        DeleteObject(track_brush);
+
+        /* Paint top arrow button */
+        HBRUSH arrow_brush = CreateSolidBrush(CLR_SB_ARROWBG);
+        RECT top_arrow = {sb_left, 0, w, arrow_h};
+        FillRect(hdc, &top_arrow, arrow_brush);
+        /* Draw up arrow */
+        SetTextColor(hdc, CLR_SB_ARROW);
+        SetBkMode(hdc, TRANSPARENT);
+        HFONT arrow_font = CreateFontA(sbw - 8, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+            DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, "Marlett");
+        SelectObject(hdc, arrow_font);
+        SIZE asz;
+        const wchar_t *up_arrow = L"\x35";  /* Marlett up arrow = '5' */
+        GetTextExtentPoint32W(hdc, up_arrow, 1, &asz);
+        TextOutW(hdc, sb_left + (sbw - asz.cx) / 2, (arrow_h - asz.cy) / 2, up_arrow, 1);
+
+        /* Paint bottom arrow button */
+        RECT bot_arrow = {sb_left, h - arrow_h, w, h};
+        FillRect(hdc, &bot_arrow, arrow_brush);
+        /* Draw down arrow */
+        const wchar_t *dn_arrow = L"\x36";  /* Marlett down arrow = '6' */
+        GetTextExtentPoint32W(hdc, dn_arrow, 1, &asz);
+        TextOutW(hdc, sb_left + (sbw - asz.cx) / 2, h - arrow_h + (arrow_h - asz.cy) / 2, dn_arrow, 1);
+        DeleteObject(arrow_font);
+        DeleteObject(arrow_brush);
+
+        /* Paint thumb */
+        if (thumb_h > 0) {
+            HBRUSH thumb_brush = CreateSolidBrush(CLR_SB_THUMB);
+            RECT thumb_rc = {sb_left + 2, thumb_y, w - 2, thumb_y + thumb_h};
+            FillRect(hdc, &thumb_rc, thumb_brush);
+            DeleteObject(thumb_brush);
+        }
+
+        ReleaseDC(hwnd, hdc);
+        return ret;
+    }
+    return CallWindowProcA(g_list_orig_proc, hwnd, msg, wp, lp);
+}
+
 static void RefreshWindowList(void)
 {
     g_window_count = 0;
@@ -895,6 +984,10 @@ static LRESULT CALLBACK PickerWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             16, 58, PICKER_W - 32, 270,
             hwnd, (HMENU)ID_PICKER_LIST, g_hinst, NULL);
         SendMessageA(g_picker_list, WM_SETFONT, (WPARAM)g_picker_font, TRUE);
+        /* Remove theme so WM_CTLCOLORSCROLLBAR works for dark scrollbar */
+        SetWindowTheme(g_picker_list, L"", L"");
+        /* Subclass listbox to custom-draw scrollbar */
+        g_list_orig_proc = (WNDPROC)SetWindowLongPtrA(g_picker_list, GWLP_WNDPROC, (LONG_PTR)DarkListboxProc);
 
         /* OK button */
         g_picker_ok_btn = CreateWindowA("BUTTON", "",
@@ -1048,6 +1141,12 @@ static LRESULT CALLBACK PickerWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         static HBRUSH list_brush = 0;
         if (!list_brush) list_brush = CreateSolidBrush(CLR_LIST_BG);
         return (LRESULT)list_brush;
+    }
+    case WM_CTLCOLORSCROLLBAR: {
+        /* Scrollbar background — slightly lighter than list bg */
+        static HBRUSH sb_brush = 0;
+        if (!sb_brush) sb_brush = CreateSolidBrush(RGB(50, 50, 64));
+        return (LRESULT)sb_brush;
     }
     case WM_MOUSEMOVE: {
         POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
@@ -1525,7 +1624,7 @@ static LRESULT CALLBACK WelcomeWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 {
     switch (msg) {
     case WM_CREATE: {
-        HFONT wfont = CreateFontA(18, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+        HFONT wfont = CreateFontA(20, 0, 0, 0, FW_NORMAL, 0, 0, 0,
             DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, "Microsoft YaHei UI");
         SetWindowLongPtrA(hwnd, GWLP_USERDATA, (LONG_PTR)wfont);
 
@@ -1563,27 +1662,54 @@ static LRESULT CALLBACK WelcomeWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
         TextOutW(hdc, 16, 12, L"\x263A FishWindow \x5FEB\x6377\x952E", 16);
         DeleteObject(title_font);
 
-        /* Hotkey lines */
+        /* Hotkey lines — two-column layout */
         SelectObject(hdc, wfont);
-        SetTextColor(hdc, CLR_TEXT);
-        const wchar_t *lines[] = {
-            L"Ctrl+Alt+F    \x6846\x9009\x533A\x57DF",
-            L"Ctrl+Alt+B    \x663E\x793A/\x9690\x85CF\x8FB9\x6846 (\x53EF\x62D6\x52A8\x7A97\x53E3)",
-            L"Ctrl+Alt+T    \x7A97\x53E3\x7F6E\x9876",
-            L"Ctrl+Alt+Q    \x8FD8\x539F\x7A97\x53E3",
+        int y = 80;
+        const wchar_t *keys[] = {
+            L"Ctrl+Alt+F",
+            L"Ctrl+Alt+B",
+            L"Ctrl+Alt+T",
+            L"Ctrl+Alt+Q",
         };
-        int y = 68;
+        const wchar_t *descs[] = {
+            L"\x6846\x9009\x533A\x57DF",                          /* 框选区域 */
+            L"\x663E\x793A/\x9690\x85CF\x8FB9\x6846",               /* 显示/隐藏边框 */
+            L"\x7A97\x53E3\x7F6E\x9876",                          /* 窗口置顶 */
+            L"\x8FD8\x539F\x7A97\x53E3",                          /* 还原窗口 */
+        };
+        const wchar_t *extras[] = {
+            NULL,
+            L"\x53EF\x62D6\x52A8\x7A97\x53E3",                   /* 可拖动窗口 */
+            NULL,
+            NULL,
+        };
         for (int i = 0; i < 4; i++) {
-            TextOutW(hdc, 30, y, lines[i], (int)wcslen(lines[i]));
-            y += 34;
+            /* Key column — accent color */
+            SetTextColor(hdc, CLR_ACCENT);
+            TextOutW(hdc, 30, y, keys[i], (int)wcslen(keys[i]));
+            /* Description column — text color */
+            SetTextColor(hdc, CLR_TEXT);
+            TextOutW(hdc, 170, y, descs[i], (int)wcslen(descs[i]));
+            /* Extra note in parentheses */
+            if (extras[i]) {
+                SetTextColor(hdc, RGB(140, 140, 160));
+                int desc_w = 0;
+                SIZE sz;
+                GetTextExtentPoint32W(hdc, descs[i], (int)wcslen(descs[i]), &sz);
+                desc_w = sz.cx;
+                wchar_t extra[64];
+                swprintf(extra, 64, L"(%ls)", extras[i]);
+                TextOutW(hdc, 170 + desc_w + 6, y, extra, (int)wcslen(extra));
+            }
+            y += 42;
         }
 
         /* Tips */
         SetTextColor(hdc, RGB(140, 140, 160));
-        HFONT small_font = CreateFontA(15, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+        HFONT small_font = CreateFontA(16, 0, 0, 0, FW_NORMAL, 0, 0, 0,
             DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, "Microsoft YaHei UI");
         SelectObject(hdc, small_font);
-        TextOutW(hdc, 30, y + 10, L"\x53F3\x952E\x6258\x76D8\x56FE\x6807\x53EF\x5207\x6362\x7A97\x53E3", 9);
+        TextOutW(hdc, 30, y + 16, L"\x53F3\x952E\x6258\x76D8\x56FE\x6807\x53EF\x5207\x6362\x7A97\x53E3", 9);
         DeleteObject(small_font);
 
         EndPaint(hwnd, &ps);
