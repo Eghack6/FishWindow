@@ -541,11 +541,12 @@ static void ApplyBorderRgn(HWND hwnd)
 
 static LRESULT CALLBACK BorderWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
+    HWND target = (HWND)GetWindowLongPtrA(hwnd, GWLP_USERDATA);
     switch (msg) {
     case WM_LBUTTONDOWN: {
         g_border_dragging = TRUE;
         GetCursorPos(&g_border_drag_start);
-        GetWindowRect(g_target_hwnd, &g_border_drag_orig);
+        GetWindowRect(target, &g_border_drag_orig);
         SetCapture(hwnd);
         return 0;
     }
@@ -556,7 +557,7 @@ static LRESULT CALLBACK BorderWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             int dx = now.x - g_border_drag_start.x;
             int dy = now.y - g_border_drag_start.y;
             /* Move target window */
-            MoveWindow(g_target_hwnd,
+            MoveWindow(target,
                 g_border_drag_orig.left + dx,
                 g_border_drag_orig.top + dy,
                 g_border_drag_orig.right - g_border_drag_orig.left,
@@ -571,7 +572,7 @@ static LRESULT CALLBACK BorderWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (g_border_dragging) {
             g_border_dragging = FALSE;
             ReleaseCapture();
-            GetWindowRect(g_target_hwnd, &g_last_win_rect);
+            GetWindowRect(target, &g_last_win_rect);
         }
         return 0;
     }
@@ -651,6 +652,8 @@ static void CreateBorderOverlay(RECT *clip_screen)
         w + bw * 2, h + bw * 2,
         NULL, NULL, g_hinst, NULL
     );
+    /* Store target hwnd so BorderWndProc uses the right window */
+    SetWindowLongPtrA(g_border_hwnd, GWLP_USERDATA, (LONG_PTR)g_target_hwnd);
 
     SetLayeredWindowAttributes(g_border_hwnd, 0, 220, LWA_ALPHA);
     ApplyBorderRgn(g_border_hwnd);
@@ -1373,7 +1376,6 @@ static void UpdateTrayTip(void)
     Shell_NotifyIconW(NIM_MODIFY, &g_nid);
 }
 
-/* ShowNotifyW + ShowNotifyFmt removed — neither was called; add back if needed */
 
 static HICON g_fish_icon = NULL;
 
@@ -1418,6 +1420,7 @@ static void AddTrayIcon(void)
 static void RemoveTrayIcon(void)
 {
     Shell_NotifyIconW(NIM_DELETE, &g_nid);
+    if (g_fish_icon) { DestroyIcon(g_fish_icon); g_fish_icon = NULL; }
 }
 
 /* ======================== Tray Menu ======================== */
@@ -1597,7 +1600,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_TIMER:
         if (wp == TIMER_TRACK) {
             /* Poll all clip entries for window moves */
-            BOOL any_alive = FALSE;
+            BOOL any_alive = FALSE, need_compact = FALSE;
             for (int i = 0; i < g_clip_count; i++) {
                 ClipEntry *e = &g_clips[i];
                 if (!e->target_hwnd || !IsWindow(e->target_hwnd)) {
@@ -1605,6 +1608,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                     if (e->border_hwnd && IsWindow(e->border_hwnd))
                         DestroyWindow(e->border_hwnd);
                     memset(e, 0, sizeof(ClipEntry));
+                    need_compact = TRUE;
                     continue;
                 }
                 any_alive = TRUE;
@@ -1633,6 +1637,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                     }
                 }
             }
+            if (need_compact) CompactClips();
             if (!any_alive) {
                 KillTimer(hwnd, TIMER_TRACK);
                 CompactClips();
@@ -1642,11 +1647,18 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         return 0;
     case WM_CLOSE:
-        /* Restore all clipped windows */
+        /* Restore all clipped windows — collect hwnds first to avoid
+           CompactClips invalidating the loop (issue #1) */
+    {
+        HWND to_restore[MAX_CLIP_ENTRIES];
+        int n = 0;
         for (int i = 0; i < g_clip_count; i++) {
             if (g_clips[i].target_hwnd && IsWindow(g_clips[i].target_hwnd))
-                RestoreWindow(g_clips[i].target_hwnd);
+                to_restore[n++] = g_clips[i].target_hwnd;
         }
+        for (int i = 0; i < n; i++)
+            RestoreWindow(to_restore[i]);
+    }
         KillTimer(hwnd, TIMER_TRACK);
         RemoveTrayIcon();
         PostQuitMessage(0);
@@ -1666,8 +1678,8 @@ static void DoSelectArea(void)
 
     if (g_has_clip) {
         SetWindowRgn(g_target_hwnd, NULL, TRUE);
-        RedrawWindow(g_target_hwnd, NULL, NULL, REDRAW_FULL);
-        Sleep(50);
+        RedrawWindow(g_target_hwnd, NULL, NULL, RDW_FRAME | RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+        UpdateWindow(g_target_hwnd);
     }
 
     RECT sel;
