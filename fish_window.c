@@ -859,15 +859,16 @@ static void RefreshWindowList(void)
 #define ID_PICKER_LIST  100
 #define ID_PICKER_OK    101
 #define ID_PICKER_CANCEL 102
-/* ID_PICKER_REFRESH removed — no refresh button created */
-#define ID_PICKER_REFRESH 103  /* kept for switch-case compat */
+#define ID_PICKER_REFRESH 103
 
 static BOOL g_picker_result = FALSE;
 static HWND g_picker_ok_btn = NULL;
 static HWND g_picker_cancel_btn = NULL;
+static HWND g_picker_refresh_btn = NULL;
 static HWND g_picker_close_btn = NULL;
 static BOOL g_picker_hover_ok = FALSE;
 static BOOL g_picker_hover_cancel = FALSE;
+static BOOL g_picker_hover_refresh = FALSE;
 static BOOL g_picker_hover_close = FALSE;
 
 static void PickerApplyRoundCorner(HWND hwnd)
@@ -904,6 +905,12 @@ static LRESULT CALLBACK PickerWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
             PICKER_W - 102, 344, 86, 36,
             hwnd, (HMENU)ID_PICKER_CANCEL, g_hinst, NULL);
+
+        /* Refresh button */
+        g_picker_refresh_btn = CreateWindowA("BUTTON", "",
+            WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
+            16, 344, 90, 36,
+            hwnd, (HMENU)ID_PICKER_REFRESH, g_hinst, NULL);
 
         /* Close X button (top-right) */
         g_picker_close_btn = CreateWindowA("BUTTON", "",
@@ -983,6 +990,11 @@ static LRESULT CALLBACK PickerWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 bg_clr = hover ? CLR_BTN_CANCEL_H : CLR_BTN_CANCEL;
                 txt_clr = CLR_TEXT;
                 label = L"\x53D6\x6D88"; label_len = 2; /* 取消 */
+            } else if (dis->hwndItem == g_picker_refresh_btn) {
+                hover = g_picker_hover_refresh;
+                bg_clr = hover ? CLR_BTN_OK_H : RGB(80, 80, 100);
+                txt_clr = RGB(255,255,255);
+                label = L"\x21BB \x5237\x65B0"; label_len = 3; /* ↻ 刷新 */
             } else if (dis->hwndItem == g_picker_close_btn) {
                 hover = g_picker_hover_close;
                 bg_clr = hover ? CLR_CLOSE : CLR_TITLE_BG;
@@ -1031,6 +1043,15 @@ static LRESULT CALLBACK PickerWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (new_hover != g_picker_hover_cancel) {
                 g_picker_hover_cancel = new_hover;
                 InvalidateRect(g_picker_cancel_btn, NULL, TRUE);
+            }
+        }
+        if (g_picker_refresh_btn) {
+            GetWindowRect(g_picker_refresh_btn, &rc);
+            MapWindowPoints(NULL, hwnd, (POINT*)&rc, 2);
+            BOOL new_hover = PtInRect(&rc, pt);
+            if (new_hover != g_picker_hover_refresh) {
+                g_picker_hover_refresh = new_hover;
+                InvalidateRect(g_picker_refresh_btn, NULL, TRUE);
             }
         }
         if (g_picker_close_btn) {
