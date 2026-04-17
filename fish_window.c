@@ -942,7 +942,7 @@ static LRESULT CALLBACK PickerWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         SetTextColor(hdc, CLR_ACCENT);
         SetBkMode(hdc, TRANSPARENT);
         SelectObject(hdc, g_picker_title_font);
-        TextOutW(hdc, 16, 12, L"\x263A \x9009\x62E9\x8981\x88C1\x526A\x7684\x7A97\x53E3", 8);
+        TextOutW(hdc, 16, 12, L"\x263A \x9009\x62E9\x8981\x88C1\x526A\x7684\x7A97\x53E3", 10);
 
         EndPaint(hwnd, &ps);
         return 0;
@@ -977,33 +977,51 @@ static LRESULT CALLBACK PickerWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (dis->CtlType == ODT_BUTTON) {
             /* Owner-draw button */
             BOOL hover = FALSE;
+            BOOL pressed = (dis->itemState & ODS_SELECTED) != 0;
             COLORREF bg_clr = CLR_BG, txt_clr = CLR_TEXT;
             const wchar_t *label = L"";
             int label_len = 0;
+            int btn_radius = 6;  /* round corner radius */
             if (dis->hwndItem == g_picker_ok_btn) {
                 hover = g_picker_hover_ok;
-                bg_clr = hover ? CLR_BTN_OK_H : CLR_BTN_OK;
+                if (pressed) bg_clr = RGB(0, 90, 60);
+                else bg_clr = hover ? CLR_BTN_OK_H : CLR_BTN_OK;
                 txt_clr = RGB(255,255,255);
                 label = L"\x786E\x5B9A"; label_len = 2; /* 确定 */
             } else if (dis->hwndItem == g_picker_cancel_btn) {
                 hover = g_picker_hover_cancel;
-                bg_clr = hover ? CLR_BTN_CANCEL_H : CLR_BTN_CANCEL;
+                if (pressed) bg_clr = RGB(100, 100, 120);
+                else bg_clr = hover ? CLR_BTN_CANCEL_H : CLR_BTN_CANCEL;
                 txt_clr = CLR_TEXT;
                 label = L"\x53D6\x6D88"; label_len = 2; /* 取消 */
             } else if (dis->hwndItem == g_picker_refresh_btn) {
                 hover = g_picker_hover_refresh;
-                bg_clr = hover ? CLR_BTN_OK_H : RGB(80, 80, 100);
+                if (pressed) bg_clr = RGB(40, 40, 60);
+                else bg_clr = hover ? CLR_BTN_OK_H : RGB(80, 80, 100);
                 txt_clr = RGB(255,255,255);
-                label = L"\x21BB \x5237\x65B0"; label_len = 3; /* ↻ 刷新 */
+                label = L"\x5237\x65B0"; label_len = 2; /* 刷新 */
             } else if (dis->hwndItem == g_picker_close_btn) {
                 hover = g_picker_hover_close;
                 bg_clr = hover ? CLR_CLOSE : CLR_TITLE_BG;
                 txt_clr = hover ? RGB(255,255,255) : RGB(160,160,180);
                 label = L"\x2715"; label_len = 1; /* ✕ */
+                btn_radius = 0;  /* close button: no rounding */
             }
-            HBRUSH bg = CreateSolidBrush(bg_clr);
-            FillRect(dis->hDC, &dis->rcItem, bg);
-            DeleteObject(bg);
+            /* Draw rounded rect background */
+            if (btn_radius > 0) {
+                HRGN rgn = CreateRoundRectRgn(
+                    dis->rcItem.left, dis->rcItem.top,
+                    dis->rcItem.right, dis->rcItem.bottom,
+                    btn_radius * 2, btn_radius * 2);
+                HBRUSH bg = CreateSolidBrush(bg_clr);
+                FillRgn(dis->hDC, rgn, bg);
+                DeleteObject(bg);
+                DeleteObject(rgn);
+            } else {
+                HBRUSH bg = CreateSolidBrush(bg_clr);
+                FillRect(dis->hDC, &dis->rcItem, bg);
+                DeleteObject(bg);
+            }
             SetTextColor(dis->hDC, txt_clr);
             SetBkMode(dis->hDC, TRANSPARENT);
             SelectObject(dis->hDC, g_picker_font);
