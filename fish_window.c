@@ -504,7 +504,9 @@ static void SwitchTargetWindow(void)
                 g_clips[slot].target_hwnd = new_hwnd;
                 LoadClip(slot);
                 InitTargetWindow();
-                /* Start selection directly (no auto-topmost) */
+                /* Bring window to front (not topmost) for user to clip */
+                BringWindowToTop(g_target_hwnd);
+                SetForegroundWindow(g_target_hwnd);
                 DoSelectArea();
             }
         }
@@ -1632,6 +1634,8 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                         if (slot >= g_clip_count) g_clip_count = slot + 1;
                         g_cur_idx = slot;
                         InitTargetWindow();
+                        BringWindowToTop(g_target_hwnd);
+                        SetForegroundWindow(g_target_hwnd);
                         DoSelectArea();
                     }
                 }
@@ -1681,10 +1685,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
     case WM_TRAYICON:
         if (LOWORD(lp) == WM_LBUTTONDBLCLK) {
-            if (!g_target_hwnd)
-                PostMessageA(hwnd, WM_HOTKEY, HK_SELECT, 0);
-            else
-                DoSelectArea();
+            SwitchTargetWindow();
         } else if (LOWORD(lp) == WM_RBUTTONUP) {
             ShowTrayMenu();
         }
