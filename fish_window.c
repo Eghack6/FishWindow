@@ -463,6 +463,15 @@ static void ToggleTopmost(void)
     SetWindowPos(g_target_hwnd,
         g_is_topmost ? HWND_TOPMOST : HWND_NOTOPMOST,
         0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    /* Sync border Z-order with target window */
+    if (g_border_hwnd && IsWindow(g_border_hwnd)) {
+        if (g_is_topmost)
+            SetWindowPos(g_border_hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        else
+            SetWindowPos(g_border_hwnd, g_target_hwnd, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
     SetBorderStatus(g_is_topmost ? L"\x7A97\x53E3\x7F6E\x9876" : L"\x53D6\x6D88\x7F6E\x9876");
     SaveCurClip();
 }
@@ -563,8 +572,26 @@ static LRESULT CALLBACK BorderWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 g_border_drag_orig.right - g_border_drag_orig.left,
                 g_border_drag_orig.bottom - g_border_drag_orig.top,
                 TRUE);
-            /* Re-apply clip and update border */
-            ApplyClipRegion();
+            /* Update border position directly (don't use ApplyClipRegion
+               which operates on the global current clip) */
+            int idx = FindClipIdx(target);
+            if (idx >= 0) {
+                ClipEntry *e = &g_clips[idx];
+                RECT wr;
+                GetWindowRect(target, &wr);
+                e->last_win_rect = wr;
+                if (e->border_hwnd && IsWindow(e->border_hwnd)) {
+                    MoveWindow(e->border_hwnd,
+                        wr.left + e->clip_rect_window.left - g_border_width,
+                        wr.top + e->clip_rect_window.top - g_border_width,
+                        e->clip_rect_window.right - e->clip_rect_window.left + g_border_width * 2,
+                        e->clip_rect_window.bottom - e->clip_rect_window.top + g_border_width * 2,
+                        TRUE);
+                }
+                if (idx == g_cur_idx) {
+                    g_last_win_rect = wr;
+                }
+            }
         }
         return 0;
     }
@@ -572,7 +599,14 @@ static LRESULT CALLBACK BorderWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (g_border_dragging) {
             g_border_dragging = FALSE;
             ReleaseCapture();
-            GetWindowRect(target, &g_last_win_rect);
+            RECT wr;
+            GetWindowRect(target, &wr);
+            int idx = FindClipIdx(target);
+            if (idx >= 0) {
+                g_clips[idx].last_win_rect = wr;
+                if (idx == g_cur_idx)
+                    g_last_win_rect = wr;
+            }
         }
         return 0;
     }
@@ -644,7 +678,7 @@ static void CreateBorderOverlay(RECT *clip_screen)
     }
 
     g_border_hwnd = CreateWindowExA(
-        WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+        WS_EX_LAYERED | WS_EX_TOOLWINDOW,
         "FishWindowBorder", "",
         WS_POPUP,
         clip_screen->left - bw,
@@ -657,6 +691,10 @@ static void CreateBorderOverlay(RECT *clip_screen)
 
     SetLayeredWindowAttributes(g_border_hwnd, 0, 220, LWA_ALPHA);
     ApplyBorderRgn(g_border_hwnd);
+
+    /* Place border just above target window in Z-order (not always-on-top) */
+    SetWindowPos(g_border_hwnd, g_target_hwnd, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 
     if (g_show_border)
         ShowWindow(g_border_hwnd, SW_SHOWNA);
@@ -1613,6 +1651,13 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 }
                 any_alive = TRUE;
                 if (!e->has_clip) continue;
+
+                /* Keep border Z-order just above target window */
+                if (e->border_hwnd && IsWindow(e->border_hwnd) && IsWindowVisible(e->border_hwnd)) {
+                    SetWindowPos(e->border_hwnd, e->target_hwnd, 0, 0, 0, 0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                }
+
                 RECT cur;
                 GetWindowRect(e->target_hwnd, &cur);
                 if (cur.left != e->last_win_rect.left || cur.top != e->last_win_rect.top ||
