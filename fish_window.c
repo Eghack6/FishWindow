@@ -504,8 +504,7 @@ static void SwitchTargetWindow(void)
                 g_clips[slot].target_hwnd = new_hwnd;
                 LoadClip(slot);
                 InitTargetWindow();
-                /* Auto-topmost and start selection */
-                ToggleTopmost();
+                /* Start selection directly (no auto-topmost) */
                 DoSelectArea();
             }
         }
@@ -1587,8 +1586,37 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_HOTKEY: {
         switch (wp) {
         case HK_SELECT:
-            if (!g_target_hwnd) {
-                /* No current clip — create new one */
+        {
+            /* Smart select: use foreground window if possible */
+            HWND fg = GetForegroundWindow();
+            /* Skip our own windows */
+            if (fg && fg != g_main_hwnd && fg != g_border_hwnd) {
+                int existing = FindClipIdx(fg);
+                if (existing >= 0) {
+                    /* Foreground window already clipped — re-select it */
+                    SaveCurClip();
+                    LoadClip(existing);
+                    DoSelectArea();
+                } else {
+                    /* Foreground window not clipped — select it directly */
+                    SaveCurClip();
+                    int slot = FindFreeSlot();
+                    if (slot < 0) { CompactClips(); slot = FindFreeSlot(); }
+                    if (slot >= 0) {
+                        memset(&g_clips[slot], 0, sizeof(ClipEntry));
+                        if (slot >= g_clip_count) g_clip_count = slot + 1;
+                        g_clips[slot].target_hwnd = fg;
+                        g_cur_idx = slot;
+                        LoadClip(slot);
+                        InitTargetWindow();
+                        DoSelectArea();
+                    }
+                }
+            } else if (g_target_hwnd) {
+                /* Fallback: foreground is our window, re-select current clip */
+                DoSelectArea();
+            } else {
+                /* No foreground window and no current clip — show picker */
                 if (ShowWindowPicker() && g_target_hwnd) {
                     int slot = FindFreeSlot();
                     if (slot >= 0) {
@@ -1596,15 +1624,12 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                         if (slot >= g_clip_count) g_clip_count = slot + 1;
                         g_cur_idx = slot;
                         InitTargetWindow();
-                        /* Auto-topmost and start selection */
-                        ToggleTopmost();
                         DoSelectArea();
                     }
                 }
-            } else {
-                DoSelectArea();
             }
             break;
+        }
         case HK_BORDER:
             if (g_has_clip)
                 ToggleBorder();
