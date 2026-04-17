@@ -15,6 +15,8 @@
 #include <string.h>
 
 /* DPI awareness - declare Per-Monitor V2 API dynamically */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-function-type"
 typedef BOOL (WINAPI *pfnSetProcessDpiAwarenessContext)(HANDLE);
 typedef BOOL (WINAPI *pfnSetProcessDpiAwareness)(int);
 typedef UINT (WINAPI *pfnGetDpiForWindow)(HWND);
@@ -42,20 +44,9 @@ static void EnableDpiAwareness(void)
         FreeLibrary(hShcore);
     }
 }
+#pragma GCC diagnostic pop
 
-/* Get DPI scale factor for a window (1.0 = 100%) */
-static float GetDpiScale(HWND hwnd)
-{
-    HMODULE hUser32 = GetModuleHandleA("user32.dll");
-    if (hUser32 && hwnd) {
-        pfnGetDpiForWindow fn = (pfnGetDpiForWindow)GetProcAddress(hUser32, "GetDpiForWindow");
-        if (fn) return fn(hwnd) / 96.0f;
-    }
-    HDC hdc = GetDC(NULL);
-    float scale = (float)GetDeviceCaps(hdc, LOGPIXELSX) / 96.0f;
-    ReleaseDC(NULL, hdc);
-    return scale;
-}
+/* GetDpiScale removed — EnableDpiAwareness handles DPI; per-window scale not used */
 
 /* ======================== Constants ======================== */
 
@@ -93,7 +84,6 @@ typedef struct {
     POINT end;
     RECT result;
     BOOL made;
-    HBITMAP snapshot;
     HDC snapshot_dc;
 } SelectionState;
 
@@ -272,7 +262,6 @@ static BOOL RunSelectionOverlay(RECT *out_rect)
     SetLayeredWindowAttributes(overlay, 0, 255, LWA_ALPHA);
 
     SelectionState ss = {0};
-    ss.snapshot = snapshot;
     ss.snapshot_dc = mem_dc;
     SetWindowLongPtrA(overlay, GWLP_USERDATA, (LONG_PTR)&ss);
 
@@ -294,6 +283,64 @@ static BOOL RunSelectionOverlay(RECT *out_rect)
         *out_rect = ss.result;
     }
     return ss.made;
+}
+
+/* ======================== Helpers ======================== */
+
+/* Forward declarations — functions defined later in file */
+static void UpdateTrayTip(void);
+static void SetBorderStatus(const wchar_t *text);
+static BOOL ShowWindowPicker(void);
+static void RestoreOtherWindow(HWND hwnd, LONG saved_style, LONG saved_ex_style);
+static void DoSelectArea(void);
+
+/* Full window redraw flags — used in multiple places */
+#define REDRAW_FULL  (RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | \
+                      RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_ERASENOW)
+
+/* Initialize state after picking a new target window */
+static void InitTargetWindow(void)
+{
+    GetWindowTextA(g_target_hwnd, g_target_title, sizeof(g_target_title));
+    GetWindowRect(g_target_hwnd, &g_last_win_rect);
+    g_has_clip = FALSE;
+    g_is_topmost = FALSE;
+    g_style_saved = FALSE;
+    UpdateTrayTip();
+}
+
+/* Toggle border visibility */
+static void ToggleBorder(void)
+{
+    g_show_border = !g_show_border;
+    if (g_border_hwnd && IsWindow(g_border_hwnd)) {
+        ShowWindow(g_border_hwnd, g_show_border ? SW_SHOWNA : SW_HIDE);
+    }
+    SetBorderStatus(g_show_border ? L"\x8FB9\x6846\x663E\x793A" : L"\x8FB9\x6846\x9690\x85CF");
+}
+
+/* Toggle window topmost */
+static void ToggleTopmost(void)
+{
+    g_is_topmost = !g_is_topmost;
+    SetWindowPos(g_target_hwnd,
+        g_is_topmost ? HWND_TOPMOST : HWND_NOTOPMOST,
+        0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetBorderStatus(g_is_topmost ? L"\x7A97\x53E3\x7F6E\x9876" : L"\x53D6\x6D88\x7F6E\x9876");
+}
+
+/* Switch to a new target window, restoring the old one if needed */
+static void SwitchTargetWindow(void)
+{
+    HWND old_hwnd = g_target_hwnd;
+    LONG old_style = g_orig_style;
+    LONG old_ex_style = g_orig_ex_style;
+    BOOL old_clipped = g_has_clip && g_style_saved;
+    if (ShowWindowPicker() && g_target_hwnd) {
+        if (old_clipped && old_hwnd && old_hwnd != g_target_hwnd && IsWindow(old_hwnd))
+            RestoreOtherWindow(old_hwnd, old_style, old_ex_style);
+        InitTargetWindow();
+    }
 }
 
 /* ======================== Border Overlay ======================== */
@@ -526,9 +573,7 @@ static void RestoreWindow(HWND hwnd)
     if (g_is_topmost)
         SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    RedrawWindow(hwnd, NULL, NULL,
-        RDW_INVALIDATE | RDW_ERASE | RDW_FRAME |
-        RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_ERASENOW);
+    RedrawWindow(hwnd, NULL, NULL, REDRAW_FULL);
 }
 
 /* Restore a window that may not be the current target (used when switching) */
@@ -540,9 +585,7 @@ static void RestoreOtherWindow(HWND hwnd, LONG saved_style, LONG saved_ex_style)
     SetWindowRgn(hwnd, NULL, TRUE);
     SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
-    RedrawWindow(hwnd, NULL, NULL,
-        RDW_INVALIDATE | RDW_ERASE | RDW_FRAME |
-        RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_ERASENOW);
+    RedrawWindow(hwnd, NULL, NULL, REDRAW_FULL);
 }
 
 /* ======================== Window Picker Dialog ======================== */
@@ -568,7 +611,6 @@ static HFONT g_picker_title_font = NULL;
 #define CLR_BG        RGB(32, 32, 40)
 #define CLR_TITLE_BG  RGB(40, 40, 52)
 #define CLR_LIST_BG   RGB(44, 44, 56)
-#define CLR_LIST_SEL  RGB(0, 120, 200)
 #define CLR_TEXT      RGB(220, 220, 230)
 #define CLR_ACCENT    RGB(0, 200, 255)
 #define CLR_BTN_OK    RGB(0, 160, 230)
@@ -591,6 +633,7 @@ static BOOL IsSkipClass(const char *cls)
 
 static BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lp)
 {
+    (void)lp;  /* unused — callback signature required by EnumWindows */
     if (!IsWindowVisible(hwnd)) return TRUE;
     if (GetWindow(hwnd, GW_OWNER) != NULL) return TRUE;
 
@@ -618,8 +661,8 @@ static BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lp)
 
     if (g_window_count < MAX_WINDOWS) {
         g_windows[g_window_count].hwnd = hwnd;
-        strncpy(g_windows[g_window_count].title, title, 255);
-        strncpy(g_windows[g_window_count].process_name, proc_name, 255);
+        snprintf(g_windows[g_window_count].title, 256, "%s", title);
+        snprintf(g_windows[g_window_count].process_name, 256, "%s", proc_name);
         g_window_count++;
     }
     return TRUE;
@@ -647,7 +690,8 @@ static void RefreshWindowList(void)
 #define ID_PICKER_LIST  100
 #define ID_PICKER_OK    101
 #define ID_PICKER_CANCEL 102
-#define ID_PICKER_REFRESH 103
+/* ID_PICKER_REFRESH removed — no refresh button created */
+#define ID_PICKER_REFRESH 103  /* kept for switch-case compat */
 
 static BOOL g_picker_result = FALSE;
 static HWND g_picker_ok_btn = NULL;
@@ -757,7 +801,7 @@ static LRESULT CALLBACK PickerWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (dis->CtlType == ODT_BUTTON) {
             /* Owner-draw button */
             BOOL hover = FALSE;
-            COLORREF bg_clr, txt_clr;
+            COLORREF bg_clr = CLR_BG, txt_clr = CLR_TEXT;
             const wchar_t *label = L"";
             int label_len = 0;
             if (dis->hwndItem == g_picker_ok_btn) {
@@ -922,25 +966,7 @@ static void UpdateTrayTip(void)
     Shell_NotifyIconW(NIM_MODIFY, &g_nid);
 }
 
-static void ShowNotifyW(const wchar_t *text)
-{
-    g_nid.uFlags = NIF_INFO;
-    g_nid.dwInfoFlags = NIIF_INFO;
-    g_nid.szInfoTitle[0] = 0;
-    wcsncpy(g_nid.szInfo, text, 255);
-    Shell_NotifyIconW(NIM_MODIFY, &g_nid);
-}
-
-/* Helper: format wide notify with ANSI window title */
-static void ShowNotifyFmt(const wchar_t *fmt, const char *ansi_str)
-{
-    wchar_t wtitle[256] = {0};
-    if (ansi_str)
-        MultiByteToWideChar(CP_ACP, 0, ansi_str, -1, wtitle, 256);
-    wchar_t buf[256];
-    swprintf(buf, 256, fmt, wtitle);
-    ShowNotifyW(buf);
-}
+/* ShowNotifyW + ShowNotifyFmt removed — neither was called; add back if needed */
 
 static HICON g_fish_icon = NULL;
 
@@ -1026,96 +1052,23 @@ static void ShowTrayMenu(void)
 
     switch (cmd) {
     case 10:
-        /* Click on current window title = switch window */
-        {
-            HWND old_hwnd = g_target_hwnd;
-            LONG old_style = g_orig_style;
-            LONG old_ex_style = g_orig_ex_style;
-            BOOL old_clipped = g_has_clip && g_style_saved;
-            if (ShowWindowPicker() && g_target_hwnd) {
-                /* Restore old window if it was clipped */
-                if (old_clipped && old_hwnd && old_hwnd != g_target_hwnd && IsWindow(old_hwnd))
-                    RestoreOtherWindow(old_hwnd, old_style, old_ex_style);
-                GetWindowTextA(g_target_hwnd, g_target_title, sizeof(g_target_title));
-                GetWindowRect(g_target_hwnd, &g_last_win_rect);
-                g_has_clip = FALSE;
-                g_is_topmost = FALSE;
-                g_style_saved = FALSE;
-                UpdateTrayTip();
-            }
-        }
-        break;
     case 1:
-        {
-            HWND old_hwnd = g_target_hwnd;
-            LONG old_style = g_orig_style;
-            LONG old_ex_style = g_orig_ex_style;
-            BOOL old_clipped = g_has_clip && g_style_saved;
-            if (ShowWindowPicker() && g_target_hwnd) {
-                /* Restore old window if it was clipped */
-                if (old_clipped && old_hwnd && old_hwnd != g_target_hwnd && IsWindow(old_hwnd))
-                    RestoreOtherWindow(old_hwnd, old_style, old_ex_style);
-                GetWindowTextA(g_target_hwnd, g_target_title, sizeof(g_target_title));
-                GetWindowRect(g_target_hwnd, &g_last_win_rect);
-                g_has_clip = FALSE;
-                g_is_topmost = FALSE;
-                g_style_saved = FALSE;
-                UpdateTrayTip();
-            }
-        }
+        /* Switch target window */
+        SwitchTargetWindow();
         break;
     case 2:
-        if (g_target_hwnd && IsWindow(g_target_hwnd)) {
-            if (g_has_clip) {
-                SetWindowRgn(g_target_hwnd, NULL, TRUE);
-                RedrawWindow(g_target_hwnd, NULL, NULL,
-                    RDW_INVALIDATE | RDW_ERASE | RDW_FRAME |
-                    RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_ERASENOW);
-                Sleep(50);
-            }
-            RECT sel;
-            if (RunSelectionOverlay(&sel)) {
-                RECT wr;
-                GetWindowRect(g_target_hwnd, &wr);
-                g_clip_rect_window.left = sel.left - wr.left;
-                g_clip_rect_window.top = sel.top - wr.top;
-                g_clip_rect_window.right = sel.right - wr.left;
-                g_clip_rect_window.bottom = sel.bottom - wr.top;
-                g_has_clip = TRUE;
-                ApplyClipRegion();
-                GetWindowRect(g_target_hwnd, &g_last_win_rect);
-                SetTimer(g_main_hwnd, TIMER_TRACK, 200, NULL);
-
-                int w = sel.right - sel.left;
-                int h = sel.bottom - sel.top;
-                wchar_t nmsg[256];
-                swprintf(nmsg, 256, L"\x5DF2\x88C1\x526A (%dx%d)", w, h);
-                SetBorderStatus(nmsg);
-                UpdateTrayTip();
-            } else if (g_has_clip) {
-                ApplyClipRegion();
-            }
-        } else {
+        if (g_target_hwnd && IsWindow(g_target_hwnd))
+            DoSelectArea();
+        else
             SetBorderStatus(L"\x8BF7\x5148\x9009\x62E9\x7A97\x53E3");
-        }
         break;
     case 3:
-        if (g_has_clip) {
-            g_show_border = !g_show_border;
-            if (g_border_hwnd && IsWindow(g_border_hwnd)) {
-                ShowWindow(g_border_hwnd, g_show_border ? SW_SHOWNA : SW_HIDE);
-            }
-            SetBorderStatus(g_show_border ? L"\x8FB9\x6846\x663E\x793A" : L"\x8FB9\x6846\x9690\x85CF");
-        }
+        if (g_has_clip)
+            ToggleBorder();
         break;
     case 4:
-        if (g_target_hwnd && IsWindow(g_target_hwnd)) {
-            g_is_topmost = !g_is_topmost;
-            SetWindowPos(g_target_hwnd,
-                g_is_topmost ? HWND_TOPMOST : HWND_NOTOPMOST,
-                0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            SetBorderStatus(g_is_topmost ? L"\x7A97\x53E3\x7F6E\x9876" : L"\x53D6\x6D88\x7F6E\x9876");
-        }
+        if (g_target_hwnd && IsWindow(g_target_hwnd))
+            ToggleTopmost();
         break;
     case 99:
         PostMessageA(g_main_hwnd, WM_CLOSE, 0, 0);
@@ -1125,8 +1078,6 @@ static void ShowTrayMenu(void)
 
 /* ======================== Main Window Proc ======================== */
 
-static void DoSelectArea(void);
-
 static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
@@ -1134,35 +1085,19 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         switch (wp) {
         case HK_SELECT:
             if (!g_target_hwnd) {
-                if (ShowWindowPicker() && g_target_hwnd) {
-                    GetWindowTextA(g_target_hwnd, g_target_title, sizeof(g_target_title));
-                    GetWindowRect(g_target_hwnd, &g_last_win_rect);
-                    g_has_clip = FALSE;
-                    g_is_topmost = FALSE;
-                    g_style_saved = FALSE;
-                    UpdateTrayTip();
-                }
+                if (ShowWindowPicker() && g_target_hwnd)
+                    InitTargetWindow();
             } else {
                 DoSelectArea();
             }
             break;
         case HK_BORDER:
-            if (g_has_clip) {
-                g_show_border = !g_show_border;
-                if (g_border_hwnd && IsWindow(g_border_hwnd)) {
-                    ShowWindow(g_border_hwnd, g_show_border ? SW_SHOWNA : SW_HIDE);
-                }
-                SetBorderStatus(g_show_border ? L"\x8FB9\x6846\x663E\x793A" : L"\x8FB9\x6846\x9690\x85CF");
-            }
+            if (g_has_clip)
+                ToggleBorder();
             break;
         case HK_TOPMOST:
-            if (g_target_hwnd && IsWindow(g_target_hwnd)) {
-                g_is_topmost = !g_is_topmost;
-                SetWindowPos(g_target_hwnd,
-                    g_is_topmost ? HWND_TOPMOST : HWND_NOTOPMOST,
-                    0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-                SetBorderStatus(g_is_topmost ? L"\x7A97\x53E3\x7F6E\x9876" : L"\x53D6\x6D88\x7F6E\x9876");
-            }
+            if (g_target_hwnd && IsWindow(g_target_hwnd))
+                ToggleTopmost();
             break;
         case HK_QUIT:
             if (g_target_hwnd && IsWindow(g_target_hwnd) && g_has_clip) {
@@ -1230,9 +1165,7 @@ static void DoSelectArea(void)
 
     if (g_has_clip) {
         SetWindowRgn(g_target_hwnd, NULL, TRUE);
-        RedrawWindow(g_target_hwnd, NULL, NULL,
-            RDW_INVALIDATE | RDW_ERASE | RDW_FRAME |
-            RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_ERASENOW);
+        RedrawWindow(g_target_hwnd, NULL, NULL, REDRAW_FULL);
         Sleep(50);
     }
 
@@ -1444,7 +1377,11 @@ static void ShowWelcomeDialog(void)
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int show)
 {
+    (void)hPrev; (void)cmdLine; (void)show;  /* unused — WinMain signature required */
     g_hinst = hInst;
+
+    /* Enable DPI awareness before creating any windows */
+    EnableDpiAwareness();
 
     /* Single instance */
     HANDLE mutex = CreateMutexA(NULL, TRUE, "FishWindow_SingleInstance");

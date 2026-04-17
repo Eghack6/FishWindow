@@ -69,7 +69,3 @@ x86_64-w64-mingw32-gcc -mwindows -O2 -o FishWindow.exe \
 - **BorderOverlay**：独立无边框窗口，绘制裁剪区域边框 + 状态文字
 - **窗口跟踪**：200ms 轮询窗口位置变化，边框跟随移动
 - **ANSI API**：全量使用 ANSI (A) 后缀 Win32 API，避免 MinGW 编码问题
-
-## 致谢
-
-参考了 [WindowTop](https://github.com/WindowTop/WindowTop-App) 的 Crop 功能设计，做了极简化实现。
