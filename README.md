@@ -20,22 +20,22 @@
 
 | 快捷键 | 功能 |
 |--------|------|
-| `Ctrl+Alt+F` | 框选区域（自动识别当前窗口，已裁剪则重新框选） |
+| `Ctrl+Alt+F` | 框选区域（自动识别前台窗口，已裁剪则重新框选） |
 | `Ctrl+Alt+B` | 显示/隐藏裁剪边框（隐藏后完全融入桌面） |
 | `Ctrl+Alt+T` | 窗口置顶开关 |
 | `Ctrl+Alt+Q` | 还原当前窗口（取消裁剪，恢复原样） |
 
 ## 使用方法
 
-1. 下载 [FishWindow.exe](https://github.com/yourname/FishWindow/releases) 或自行编译
-2. 双击运行 → 弹出快捷键提示 → 确定后托盘出现小鱼图标
-3. 按 `Ctrl+Alt+F` → 从列表选择目标窗口
-4. 拖拽框选要保留的区域 → 松开鼠标确认
-5. 按 `Ctrl+Alt+B` 隐藏边框 → 裁剪后的窗口融入桌面
-6. 边框可拖拽移动窗口位置
-6. 右键托盘图标可切换目标窗口
-7. 按 `Ctrl+Alt+Q` 还原当前窗口
-8. 退出程序：右键托盘图标 → 退出（会自动还原所有窗口）
+1. 下载 [FishWindow.exe](https://github.com/Eghack6/FishWindow/releases) 或自行编译
+2. 双击运行 → 弹出快捷键说明 → 确定后弹出窗口选择器
+3. 从列表选择目标窗口 → 拖拽框选要保留的区域
+4. 按 `Ctrl+Alt+B` 隐藏边框 → 裁剪后的窗口融入桌面
+5. 边框可拖拽移动窗口位置
+6. 按 `Ctrl+Alt+F` 可再次裁剪当前窗口（自动识别前台窗口）
+7. 右键托盘图标可切换目标窗口、置顶、还原
+8. 按 `Ctrl+Alt+Q` 还原当前窗口
+9. 退出程序：右键托盘图标 → 退出（会自动还原所有窗口）
 
 ## 编译
 
@@ -51,7 +51,7 @@ x86_64-w64-mingw32-windres fish_window.rc fish_window_res.o
 # 编译 exe
 x86_64-w64-mingw32-gcc -mwindows -O2 -o FishWindow.exe \
   fish_window.c fish_window_res.o \
-  -lgdi32 -luser32 -lkernel32 -lshell32 -lmsimg32 -lpsapi
+  -lgdi32 -luser32 -lkernel32 -lshell32 -lmsimg32 -lpsapi -luxtheme
 ```
 
 生成的 `FishWindow.exe` 零依赖，Windows 10+ 直接运行。
