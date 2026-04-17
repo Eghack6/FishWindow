@@ -1,0 +1,2 @@
+/* FishWindow resource file - embed icon into exe */
+1 ICON "fish.ico"
