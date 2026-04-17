@@ -1599,10 +1599,23 @@ static LRESULT CALLBACK WelcomeWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
         DRAWITEMSTRUCT *dis = (DRAWITEMSTRUCT *)lp;
         if (dis->CtlType == ODT_BUTTON && dis->hwndItem == g_welcome_ok_btn) {
             BOOL hover = g_welcome_hover_ok;
-            COLORREF bg_clr = hover ? CLR_BTN_OK_H : CLR_BTN_OK;
+            BOOL pressed = (dis->itemState & ODS_SELECTED) != 0;
+            COLORREF bg_clr;
+            if (pressed) bg_clr = RGB(0, 90, 60);
+            else bg_clr = hover ? CLR_BTN_OK_H : CLR_BTN_OK;
+            /* Fill corners with parent background */
+            HBRUSH parent_bg = CreateSolidBrush(CLR_BG);
+            FillRect(dis->hDC, &dis->rcItem, parent_bg);
+            DeleteObject(parent_bg);
+            /* Draw rounded button */
+            HRGN rgn = CreateRoundRectRgn(
+                dis->rcItem.left, dis->rcItem.top,
+                dis->rcItem.right, dis->rcItem.bottom,
+                12, 12);  /* 6px radius */
             HBRUSH bg = CreateSolidBrush(bg_clr);
-            FillRect(dis->hDC, &dis->rcItem, bg);
+            FillRgn(dis->hDC, rgn, bg);
             DeleteObject(bg);
+            DeleteObject(rgn);
             SetTextColor(dis->hDC, RGB(255,255,255));
             SetBkMode(dis->hDC, TRANSPARENT);
             HFONT wfont = (HFONT)GetWindowLongPtrA(hwnd, GWLP_USERDATA);
