@@ -1589,8 +1589,16 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         {
             /* Smart select: use foreground window if possible */
             HWND fg = GetForegroundWindow();
-            /* Skip our own windows */
-            if (fg && fg != g_main_hwnd && fg != g_border_hwnd) {
+            /* Check if foreground is one of our own windows */
+            char fg_class[256] = {0};
+            if (fg) GetClassNameA(fg, fg_class, sizeof(fg_class));
+            BOOL is_our_window = (fg == g_main_hwnd) || (fg == g_border_hwnd) ||
+                (strcmp(fg_class, "FishWindowPicker") == 0) ||
+                (strcmp(fg_class, "FishWindowWelcome") == 0) ||
+                (strcmp(fg_class, "FishWindowBorder") == 0) ||
+                (strcmp(fg_class, "FishWindowSelection") == 0);
+
+            if (fg && !is_our_window) {
                 int existing = FindClipIdx(fg);
                 if (existing >= 0) {
                     /* Foreground window already clipped — re-select it */
@@ -1613,10 +1621,10 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                     }
                 }
             } else if (g_target_hwnd) {
-                /* Fallback: foreground is our window, re-select current clip */
+                /* Foreground is our window but we have a current clip — re-select */
                 DoSelectArea();
             } else {
-                /* No foreground window and no current clip — show picker */
+                /* No foreground window or first launch — show picker */
                 if (ShowWindowPicker() && g_target_hwnd) {
                     int slot = FindFreeSlot();
                     if (slot >= 0) {
@@ -1631,22 +1639,43 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             break;
         }
         case HK_BORDER:
-            if (g_has_clip)
-                ToggleBorder();
-            break;
         case HK_TOPMOST:
-            if (g_target_hwnd && IsWindow(g_target_hwnd))
-                ToggleTopmost();
-            break;
         case HK_QUIT:
-            if (g_target_hwnd && IsWindow(g_target_hwnd) && g_has_clip) {
-                SaveCurClip();
-                RestoreWindow(g_target_hwnd);
-                KillTimer(hwnd, TIMER_TRACK);
-                SetBorderStatus(L"\x5DF2\x8FD8\x539F");
-                UpdateTrayTip();
+        {
+            /* All hotkeys operate on foreground window's clip entry */
+            HWND fg = GetForegroundWindow();
+            int fg_idx = -1;
+            if (fg && fg != g_main_hwnd && fg != g_border_hwnd)
+                fg_idx = FindClipIdx(fg);
+            /* If foreground not found, fall back to current clip */
+            if (fg_idx < 0 && g_target_hwnd)
+                fg_idx = g_cur_idx;
+            if (fg_idx < 0) break;
+
+            /* Switch to that clip entry */
+            SaveCurClip();
+            LoadClip(fg_idx);
+
+            switch (wp) {
+            case HK_BORDER:
+                if (g_has_clip)
+                    ToggleBorder();
+                break;
+            case HK_TOPMOST:
+                if (g_target_hwnd && IsWindow(g_target_hwnd))
+                    ToggleTopmost();
+                break;
+            case HK_QUIT:
+                if (g_target_hwnd && IsWindow(g_target_hwnd) && g_has_clip) {
+                    RestoreWindow(g_target_hwnd);
+                    if (g_clip_count == 0) KillTimer(hwnd, TIMER_TRACK);
+                    SetBorderStatus(L"\x5DF2\x8FD8\x539F");
+                    UpdateTrayTip();
+                }
+                break;
             }
             break;
+        }
         }
         return 0;
     }
