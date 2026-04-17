@@ -2073,7 +2073,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int show)
     AddTrayIcon();
 
     /* Auto-show window picker on first run */
-    PostMessageA(g_main_hwnd, WM_HOTKEY, HK_SELECT, 0);
+    SwitchTargetWindow();
 
     /* Message loop */
     MSG msg;
