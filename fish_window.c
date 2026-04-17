@@ -932,7 +932,61 @@ static LRESULT CALLBACK DarkListboxProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
     case WM_NCPAINT:
     case WM_PRINT:
     case WM_PAINT:
-        /* Let default draw, then overlay our dark scrollbar */
+    {
+        LRESULT ret = CallWindowProcA(g_list_orig_proc, hwnd, msg, wp, lp);
+        RedrawDarkScrollbar(hwnd);
+        return ret;
+    }
+    /* Handle scrollbar clicks ourselves to prevent system white flash */
+    case WM_NCLBUTTONDOWN:
+    case WM_NCLBUTTONDBLCLK:
+    {
+        POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+        ScreenToClient(hwnd, &pt);
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        int sbw = GetSystemMetrics(SM_CXVSCROLL);
+        int sb_left = rc.right - sbw;
+
+        if (pt.x >= sb_left) {
+            int h = rc.bottom;
+            int arrow_h = sbw;
+            SCROLLINFO si = {0};
+            si.cbSize = sizeof(si);
+            si.fMask = SIF_ALL;
+            GetScrollInfo(hwnd, SB_VERT, &si);
+            int track_h = h - arrow_h * 2;
+            int thumb_h = 0, thumb_y = 0;
+            if (si.nMax > si.nMin && track_h > 0) {
+                int range = si.nMax - si.nMin + 1 - (int)si.nPage;
+                if (range <= 0) range = 1;
+                thumb_h = (int)((double)si.nPage / (si.nMax - si.nMin + 1) * track_h);
+                if (thumb_h < 20) thumb_h = 20;
+                if (thumb_h > track_h) thumb_h = track_h;
+                thumb_y = arrow_h + (int)((double)(si.nPos - si.nMin) / range * (track_h - thumb_h));
+            }
+            int cmd = SB_ENDSCROLL;
+            if (pt.y < arrow_h) cmd = SB_LINEUP;
+            else if (pt.y >= h - arrow_h) cmd = SB_LINEDOWN;
+            else if (thumb_h > 0 && pt.y >= thumb_y && pt.y < thumb_y + thumb_h) {
+                /* Thumb drag — let system handle but repaint after */
+                LRESULT ret = CallWindowProcA(g_list_orig_proc, hwnd, msg, wp, lp);
+                RedrawDarkScrollbar(hwnd);
+                return ret;
+            }
+            else if (pt.y < thumb_y) cmd = SB_PAGEUP;
+            else cmd = SB_PAGEDOWN;
+            SendMessageA(hwnd, WM_VSCROLL, MAKELONG(cmd, 0), 0);
+            RedrawDarkScrollbar(hwnd);
+            return 0;
+        }
+        /* Not in scrollbar — pass through */
+        LRESULT ret = CallWindowProcA(g_list_orig_proc, hwnd, msg, wp, lp);
+        RedrawDarkScrollbar(hwnd);
+        return ret;
+    }
+    case WM_NCLBUTTONUP:
+    case WM_NCMOUSEMOVE:
     {
         LRESULT ret = CallWindowProcA(g_list_orig_proc, hwnd, msg, wp, lp);
         RedrawDarkScrollbar(hwnd);
@@ -943,13 +997,8 @@ static LRESULT CALLBACK DarkListboxProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
     case WM_KEYDOWN:
     case WM_LBUTTONDOWN:
     case WM_LBUTTONUP:
-    case WM_NCLBUTTONDOWN:
-    case WM_NCLBUTTONUP:
-    case WM_NCMOUSEMOVE:
-    case WM_NCMBUTTONDOWN:
     {
         LRESULT ret = CallWindowProcA(g_list_orig_proc, hwnd, msg, wp, lp);
-        /* After any scroll action, repaint our dark scrollbar */
         RedrawDarkScrollbar(hwnd);
         return ret;
     }
